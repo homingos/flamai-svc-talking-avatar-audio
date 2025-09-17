@@ -1,0 +1,39 @@
+# Git and Version Control
+.git
+.gitignore
+
+# Docker files (don't need to be inside the image)
+Dockerfile
+.dockerignore
+
+# Environment files (NEVER commit secrets)
+.env
+.env.*
+!.env.example
+
+# Python cache and artifacts
+__pycache__
+*.py[cod]
+*.so
+
+# Virtual Environments (VERY IMPORTANT)
+.venv
+venv
+env
+
+# IDE and Editor-specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test, coverage, and runtime artifacts
+.pytest_cache
+.coverage
+htmlcov/
+runtime/
+local_audio_tests/
+
+# OS-specific files
+.DS_Store```
+
