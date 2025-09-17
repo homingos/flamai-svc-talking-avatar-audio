@@ -1,0 +1,68 @@
+# Production-optimized multi-stage build
+FROM python:3.11-slim AS builder
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libffi-dev \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+
+# Copy dependency files for better caching
+COPY pyproject.toml uv.lock README.md ./
+
+# Install dependencies with optimizations
+RUN uv sync --frozen --no-dev --no-cache \
+    && find /app/.venv -type f -name "*.pyc" -delete \
+    && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + \
+    && find /app/.venv -name "*.pyo" -delete
+
+# Production stage
+FROM python:3.11-slim AS production
+
+# Install minimal runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libffi8 \
+    libssl3 \
+    tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -s /bin/bash -u 1000 appuser
+
+WORKDIR /app
+
+# Copy virtual environment
+COPY --from=builder /app/.venv /app/.venv
+
+# Copy only necessary application files
+COPY --chown=appuser:appuser app.py ./
+COPY --chown=appuser:appuser src/ ./src/
+
+# Create directories with proper permissions
+RUN mkdir -p data/{assets,logs,models,outputs,temp,uploads} \
+    && chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Environment variables
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONPATH="/app" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONHASHSEED=random
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/status')" || exit 1
+
+# Expose port
+EXPOSE 8000
+
+# Use tini as init system for proper signal handling
+ENTRYPOINT ["tini", "--"]
+CMD ["python", "app.py"]
