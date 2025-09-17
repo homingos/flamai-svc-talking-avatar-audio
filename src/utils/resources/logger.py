@@ -23,6 +23,7 @@ class Logger:
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
+            logger.propagate = False
 
             Logger._logger = logger
         return Logger._logger

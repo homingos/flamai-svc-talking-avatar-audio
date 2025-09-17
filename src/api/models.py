@@ -24,6 +24,16 @@ class GenerateSpeechRequest(BaseModel):
         description="The ID of the voice to use.", 
         json_schema_extra={'example': "male-english-2"}
     )
+    upload_to_gcp: bool = Field(
+        default=False,
+        description="Whether to upload the generated audio to GCP bucket",
+        json_schema_extra={'example': False}
+    )
+    gcp_path: Optional[str] = Field(
+        default=None,
+        description="Custom path in GCP bucket for the audio file",
+        json_schema_extra={'example': "audio/generated/"}
+    )
 
 # --- Response Schemas ---
 
@@ -31,6 +41,7 @@ class VoiceCloneResponse(BaseModel):
     success: bool
     message: str
     voice_id: Optional[str] = None
+    gcp_url: Optional[str] = None
 
 class HealthCheckResponse(BaseModel):
     status: HealthStatus

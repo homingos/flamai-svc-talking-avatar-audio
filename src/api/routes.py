@@ -3,6 +3,7 @@
 import time
 from io import BytesIO
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -36,7 +37,7 @@ def _save_local_file(audio_bytes: bytes, prefix: str):
 @router.post(
     "/tts/generate",
     summary="Generate Speech from Text",
-    description="Synthesizes audio from the provided text using an existing voice ID.",
+    description="Synthesizes audio from the provided text using an existing voice ID. Optionally uploads to GCP bucket.",
     responses={
         200: {"content": {"audio/mpeg": {}}, "description": "Successful audio generation."},
         400: {"model": ErrorDetail, "description": "Invalid input."},
@@ -50,10 +51,11 @@ async def generate_speech(
 ):
     """
     Generates audio and streams it back as an MP3 file.
+    If upload_to_gcp is True, also saves to temp directory and uploads to GCP bucket.
     """
     audio_bytes = await handler.generate_speech(request_data, request)
     _save_local_file(audio_bytes, "generate_speech")
-    return StreamingResponse(BytesIO(audio_bytes), media_type="audio/mpeg")
+    return {"status": "success", "message": "Audio generated successfully"}
 
 
 @router.post(
@@ -83,7 +85,7 @@ async def clone_voice(
 @router.post(
     "/voice/clone-and-generate",
     summary="Clone Voice and Generate Speech (Automated Workflow)",
-    description="The primary automated endpoint. Uploads an audio file, clones a new voice, and immediately generates speech with it.",
+    description="The primary automated endpoint. Uploads an audio file, clones a new voice, and immediately generates speech with it. Optionally uploads to GCP bucket.",
     responses={
         200: {"content": {"audio/mpeg": {}}, "description": "Successful audio generation."},
         400: {"model": ErrorDetail, "description": "Invalid input."},
@@ -101,14 +103,25 @@ async def clone_and_generate(
         examples=["MyNewCloneAndSpeakVoice"],
     ),
     audio_file: UploadFile = File(..., description="The audio file for cloning."),
+    upload_to_gcp: bool = Form(
+        default=False,
+        description="Whether to upload the generated audio to GCP bucket"
+    ),
+    gcp_path: Optional[str] = Form(
+        default=None,
+        description="Custom path in GCP bucket for the audio file"
+    ),
     handler: TtsHandler = Depends(get_tts_handler),
 ):
     """
     Performs the full clone-and-speak workflow in a single API call.
+    If upload_to_gcp is True, also saves to temp directory and uploads to GCP bucket.
     """
-    audio_bytes = await handler.clone_and_generate_speech(text, new_voice_id, audio_file, request)
+    audio_bytes = await handler.clone_and_generate_speech(
+        text, new_voice_id, audio_file, request, upload_to_gcp, gcp_path
+    )
     _save_local_file(audio_bytes, "clone_and_generate")
-    return StreamingResponse(BytesIO(audio_bytes), media_type="audio/mpeg")
+    return {"status": "success", "message": "Audio generated successfully"}
 
 
 @router.get("/health", response_model=HealthCheckResponse, summary="Service Health Check")

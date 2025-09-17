@@ -17,6 +17,7 @@ from src.core.server_manager import AIService, ServerManager, ServiceConfig, cre
 from src.services.tts_service import MinimaxTtsService
 from src.utils.config.settings import settings
 from src.utils.resources.logger import logger
+from src.utils.resources.gcp_bucket_manager import GCSBucketManager
 
 # --- Service Class Mapping ---
 # Maps service names from config.yaml to their Python class implementations.
@@ -37,6 +38,26 @@ async def lifespan(app: FastAPI):
         server_manager = create_server_manager()
         app.state.process_manager = process_manager
         app.state.server_manager = server_manager
+
+        # Initialize GCP Bucket Manager
+        bucket_name = os.getenv('GCP_BUCKET_NAME')
+        if bucket_name:
+            try:
+                gcp_bucket_manager = GCSBucketManager(
+                    bucket_name=bucket_name,
+                    credentials_path=os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),
+                    create_bucket=os.getenv('GCP_CREATE_BUCKET', 'false').lower() == 'true',
+                    location=os.getenv('GCP_BUCKET_LOCATION', 'US'),
+                    project_id=os.getenv('GCP_PROJECT_ID')
+                )
+                app.state.gcp_bucket_manager = gcp_bucket_manager
+                logger.info(f"GCP Bucket Manager initialized for bucket: {bucket_name}")
+            except Exception as e:
+                logger.error(f"Failed to initialize GCP Bucket Manager: {e}")
+                app.state.gcp_bucket_manager = None
+        else:
+            logger.warning("GCP_BUCKET_NAME not set. GCP upload functionality will be disabled.")
+            app.state.gcp_bucket_manager = None
 
         await register_services(server_manager)
         
