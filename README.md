@@ -47,44 +47,59 @@ source .venv/bin/activate
 ```
 
 # Activate it (Windows PowerShell)
-# .venv\Scripts\Activate.ps1
+```bash
+.venv\Scripts\Activate.ps1
+```
 
 # Install all dependencies including dev extras
+```bash
 uv sync --all-groups```
+```
 
 **Using `pip`:**
 
 ```bash
 # Create a virtual environment
 python -m venv .venv
+```
 
 # Activate it (Linux/macOS)
+```bash
 source .venv/bin/activate
+```
 
 # Activate it (Windows PowerShell)
-# .venv\Scripts\Activate.ps1
+```bash
+.venv\Scripts\Activate.ps1
+```
 
 # Install dependencies including the [dev] extras
+```bash
 pip install -e ".[dev]"
+```
 
 ### Step 3: Configure Environment Variables
 The API requires credentials for the MiniMax service. Create a .env file in the project root by copying the example template:
 code
-Bash
+```Bash
 cp .env.example .env
+```
+
 Now, open the .env file and add your actual MiniMax credentials:
-code
-Env
 # .env
+```bash
 MINIMAX_API_KEY="YOUR_API_KEY_HERE"
 MINIMAX_GROUP_ID="YOUR_GROUP_ID_HERE"
+```
+
 The application will automatically load these variables at runtime.
-Step 4: Run the Local Development Server
+### Step 4: Run the Local Development Server
 With the virtual environment activated and the .env file configured, you can start the API:
 code
-Bash
+```Bash
 uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 --reload: Enables hot-reloading for development, automatically restarting the server when code changes are detected.
+```
 The API will now be running at http://localhost:8000.
 
 ### Step 5: Access the Interactive API Docs
@@ -93,20 +108,19 @@ http://localhost:8000/docs
 Here, you can explore all available endpoints, view their schemas, and test them directly from your browser.
 📖 API Usage Examples
 All API endpoints are prefixed with /api/v1.
-Health Check
+1. Health Check
 Check if the service is running and all its internal components are initialized correctly.
 Endpoint: GET /api/v1/health
 curl Example:
-code
-Bash
+```Bash
 curl -X GET "http://localhost:8000/api/v1/health"
-Generate Speech (Using an existing voice)
+```
+2. Generate Speech (Using an existing voice)
 Endpoint: POST /api/v1/tts/generate
 Description: Generates speech from text using a pre-existing voice_id.
 curl Example:
 This command will send a request to generate speech and save the resulting audio as speech.mp3.
-code
-Bash
+```Bash
 curl -X POST "http://localhost:8000/api/v1/tts/generate" \
 -H "Content-Type: application/json" \
 -d '{
@@ -114,28 +128,29 @@ curl -X POST "http://localhost:8000/api/v1/tts/generate" \
   "voice_id": "male-english-2"
 }' \
 --output speech_from_existing_voice.mp3
-Clone a Voice
+```
+3. Clone a Voice
 Endpoint: POST /api/v1/voice/clone
 Description: Uploads an audio file to create a new voice clone.
 curl Example:
 This command clones a voice from my_voice.mp3 and assigns it the ID MyClonedVoice01. A successful response will include the new voice_id.
-code
-Bash
+```Bash
 curl -X POST "http://localhost:8000/api/v1/voice/clone" \
 -F "new_voice_id=MyClonedVoice01" \
 -F "audio_file=@/path/to/your/my_voice.mp3"
-Clone and Generate Speech (Automated Workflow)
+```
+4. Clone and Generate Speech (Automated Workflow)
 Endpoint: POST /api/v1/voice/clone-and-generate
 Description: The primary automated endpoint. It clones a new voice from an audio file and immediately generates speech with it in a single call.
 curl Example:
 This command clones a voice from my_voice.mp3, names it MyWebAppVoice001, generates speech from the provided text, and saves the output to output.mp3.
-code
-Bash
+```Bash
 curl -X POST "http://localhost:8000/api/v1/voice/clone-and-generate" \
 -F "text=This is a new voice, cloned and generated in one step." \
 -F "new_voice_id=MyWebAppVoice001" \
 -F "audio_file=@/path/to/your/sample.mp3" \
 --output cloned_and_generated_speech.mp3
+```
 📋 API Endpoint Reference
 Method	Endpoint	Description
 GET	/api/v1/health	Checks the health of the API and its dependent services.
@@ -146,18 +161,18 @@ POST	/api/v1/voice/clone-and-generate	Handles the entire clone-and-speak workflo
 A multi-stage Dockerfile is provided for building a small, efficient production image.
 1. Build the Docker Image
 From the project's root directory, run:
-code
-Bash
+```Bash
 docker build -t minimax-tts-api .
+```
 2. Run the Docker Container
 You must provide the environment variables to the container. The easiest way is using the --env-file flag with your .env file.
-code
-Bash
+```Bash
 docker run -d --rm \
   -p 8000:8000 \
   --env-file .env \
   --name tts-api-container \
   minimax-tts-api
+```
 The containerized API is now running and accessible at http://localhost:8000.
 -d: Run in detached mode.
 --rm: Automatically remove the container when it stops.
