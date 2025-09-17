@@ -40,6 +40,7 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy only necessary application files
 COPY --chown=appuser:appuser app.py ./
+COPY --chown=appuser:appuser runpod_app.py ./
 COPY --chown=appuser:appuser src/ ./src/
 
 # Create directories with proper permissions
@@ -65,4 +66,4 @@ EXPOSE 8000
 
 # Use tini as init system for proper signal handling
 ENTRYPOINT ["tini", "--"]
-CMD ["python", "app.py"]
+CMD ["python", "runpod_app.py"]
