@@ -25,33 +25,33 @@ The architecture is modular and extensible, allowing for the easy addition of ne
 - [uv](https://github.com/astral-sh/uv) (recommended) or `pip` for package management.
 - [Docker](https://www.docker.com/get-started/) (for containerized deployment).
 
-### Step 1: Clone the Repository
+# Step 1: Clone the Repository
 
 ```bash
 git clone https://github.com/homingos/flamai-svc-talking-avatar-audio.git
 cd flamai-svc-talking-avatar-audio
 ```
 
-### Step 2: Install Dependencies
+# Step 2: Install Dependencies
 It is highly recommended to use a virtual environment.
 Using uv (Recommended & Fastest):
 
-# Create a virtual environment
+### Create a virtual environment
 ```bash
 uv venv
 ```
 
-# Activate it (Linux/macOS)
+### Activate it (Linux/macOS)
 ```bash
 source .venv/bin/activate
 ```
 
-# Activate it (Windows PowerShell)
+### Activate it (Windows PowerShell)
 ```bash
 .venv\Scripts\Activate.ps1
 ```
 
-# Install all dependencies including dev extras
+### Install all dependencies including dev extras
 ```bash
 uv sync --all-groups```
 ```
@@ -63,22 +63,22 @@ uv sync --all-groups```
 python -m venv .venv
 ```
 
-# Activate it (Linux/macOS)
+### Activate it (Linux/macOS)
 ```bash
 source .venv/bin/activate
 ```
 
-# Activate it (Windows PowerShell)
+### Activate it (Windows PowerShell)
 ```bash
 .venv\Scripts\Activate.ps1
 ```
 
-# Install dependencies including the [dev] extras
+### Install dependencies including the [dev] extras
 ```bash
 pip install -e ".[dev]"
 ```
 
-### Step 3: Configure Environment Variables
+# Step 3: Configure Environment Variables
 The API requires credentials for the MiniMax service. Create a .env file in the project root by copying the example template:
 code
 ```Bash
@@ -86,14 +86,14 @@ cp .env.example .env
 ```
 
 Now, open the .env file and add your actual MiniMax credentials:
-# .env
+### .env
 ```bash
 MINIMAX_API_KEY="YOUR_API_KEY_HERE"
 MINIMAX_GROUP_ID="YOUR_GROUP_ID_HERE"
 ```
 
 The application will automatically load these variables at runtime.
-### Step 4: Run the Local Development Server
+# Step 4: Run the Local Development Server
 With the virtual environment activated and the .env file configured, you can start the API:
 code
 ```Bash
@@ -102,7 +102,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
 The API will now be running at http://localhost:8000.
 
-### Step 5: Access the Interactive API Docs
+# Step 5: Access the Interactive API Docs
 Once the server is running, open your browser and navigate to the interactive Swagger UI documentation:
 http://localhost:8000/docs
 Here, you can explore all available endpoints, view their schemas, and test them directly from your browser.
@@ -174,11 +174,17 @@ docker run -d --rm \
   minimax-tts-api
 ```
 The containerized API is now running and accessible at http://localhost:8000.
+
 -d: Run in detached mode.
+
 --rm: Automatically remove the container when it stops.
+
 -p 8000:8000: Map port 8000 on your host to port 8000 in the container.
+
 --env-file .env: Load environment variables from the .env file.
+
 --name tts-api-container: Assign a memorable name to the container.
+
 ☁️ RunPod Deployment
 This repository is compatible with RunPod Serverless. The runpod_app.py file serves as the entry point.
 Create a New Template on RunPod.
