@@ -27,6 +27,16 @@ logging:
   level: "INFO" # debug, info, warning, error, critical
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+# GCP Configuration
+gcp:
+  enabled: true  # Set to false to disable GCP functionality
+  bucket_name: "${GCP_BUCKET_NAME}"
+  credentials_path: "${GOOGLE_APPLICATION_CREDENTIALS}"
+  create_bucket: false  # Set to true to create bucket if it doesn't exist
+  location: "US"  # Bucket location for creation
+  project_id: "${GCP_PROJECT_ID}"
+  default_upload_path: "audio/"  # Default path in bucket for uploads
+
 # Server Manager Configuration
 server_manager:
   # Directories used by the server and process managers
