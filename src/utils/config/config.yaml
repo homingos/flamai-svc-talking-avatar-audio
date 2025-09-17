@@ -32,7 +32,7 @@ logging:
 gcp:
   enabled: true  # Set to false to disable GCP functionality
   bucket_name: "${GCP_BUCKET_NAME}"
-  credentials_path: "${GOOGLE_APPLICATION_CREDENTIALS}"
+  credentials_path: "${GKE_SA_DEV}"
   create_bucket: false  # Set to true to create bucket if it doesn't exist
   location: "US"  # Bucket location for creation
   project_id: "${GCP_PROJECT_ID}"

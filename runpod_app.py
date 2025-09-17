@@ -2,8 +2,12 @@ import base64
 import os
 import sys
 import uuid
+import time
+import json
 from pathlib import Path
 import asyncio
+import tempfile
+from typing import Optional, Dict, Any, List
 import runpod
 from dotenv import load_dotenv
 
@@ -16,102 +20,951 @@ from src.services.tts_service import MinimaxTtsService
 from src.core.server_manager import ServiceConfig
 from src.utils.config.settings import settings
 from src.utils.resources.logger import logger
-
-# Globals
-tts_service: MinimaxTtsService = None
-TEMP_DIR = Path("/tmp/runpod_uploads")
-TEMP_DIR.mkdir(exist_ok=True)
+from src.utils.resources.gcp_bucket_manager import GCSBucketManager
 
 
-def _initialize_service():
-    """Initializes the TTS service on cold start."""
-    global tts_service
-    if tts_service is None:
-        logger.info("Cold start: Initializing Minimax TTS Service for RunPod...")
+class TTSServerlessSystem:
+    """
+    RunPod Serverless TTS System
+    Single unified endpoint structure for all TTS operations with GCP storage
+    """
+    
+    def __init__(self):
+        """Initialize the TTS system for RunPod"""
+        self.settings = settings
         
-        # Configuration is dynamically loaded with env var substitution
-        service_config_data = settings.get("server_manager.services.minimax_tts", {})
+        # Initialize TTS service
+        logger.info("🎤 Initializing TTS Service...")
+        
+        # Get configuration from settings
+        service_config_data = self.settings.get("server_manager.services.minimax_tts", {})
+        
+        logger.info(f"📋 TTS Configuration:")
+        logger.info(f"  - Service: Minimax TTS")
+        logger.info(f"  - Config: {service_config_data}")
         
         service_config = ServiceConfig(
             name="minimax_tts",
             config=service_config_data.get("config", {})
         )
-        tts_service = MinimaxTtsService(service_config)
         
-        # Manually initialize since we're not using the full server manager lifespan
-        asyncio.run(tts_service.initialize())
-        logger.info("Minimax TTS Service initialized.")
-    return tts_service
-
-
-async def handle_generate_speech(job_input: dict):
-    """Handler for generating speech from text and an existing voice_id."""
-    text = job_input.get('text')
-    voice_id = job_input.get('voice_id')
-
-    if not text or not voice_id:
-        return {"error": "Missing 'text' or 'voice_id' in job input."}
-
-    audio_bytes = await tts_service.generate_speech_bytes(text, voice_id)
-    if audio_bytes:
-        return {"audio_base64": base64.b64encode(audio_bytes).decode('utf-8')}
-    else:
-        return {"error": "Failed to generate speech."}
-
-
-async def handle_clone_and_generate(job_input: dict):
-    """Handler for the full clone-and-generate workflow."""
-    text = job_input.get('text')
-    new_voice_id = job_input.get('new_voice_id')
-    audio_base64 = job_input.get('audio_base64')
-
-    if not all([text, new_voice_id, audio_base64]):
-        return {"error": "Missing 'text', 'new_voice_id', or 'audio_base64' in job input."}
-
-    # Decode and save the temporary audio file
-    try:
-        audio_bytes = base64.b64decode(audio_base64)
-        temp_file_path = TEMP_DIR / f"{uuid.uuid4()}.mp3"
-        with open(temp_file_path, "wb") as f:
-            f.write(audio_bytes)
-    except Exception as e:
-        logger.error(f"Failed to decode or save audio file: {e}")
-        return {"error": f"Failed to decode or save audio file: {e}"}
-
-    # Perform the clone and speech generation
-    output_audio_bytes = await tts_service.clone_and_generate_speech_bytes(
-        text=text,
-        audio_clone_path=str(temp_file_path),
-        new_voice_id=new_voice_id
-    )
+        self.tts_service = MinimaxTtsService(service_config)
+        
+        # Initialize the service
+        asyncio.run(self.tts_service.initialize())
+        
+        # Initialize GCP Bucket Manager
+        self.gcp_manager = None
+        self._initialize_gcp_manager()
+        
+        # Setup temp directory
+        self.temp_dir = Path("/tmp/runpod_uploads")
+        self.temp_dir.mkdir(exist_ok=True)
+        
+        # Processing metrics
+        self.total_requests = 0
+        self.successful_requests = 0
+        self.failed_requests = 0
+        self.start_time = time.time()
+        
+        logger.info("✅ TTS Serverless System initialized!")
     
-    # Cleanup temporary file
-    os.remove(temp_file_path)
+    def _initialize_gcp_manager(self):
+        """Initialize GCP bucket manager if enabled"""
+        try:
+            gcp_config = self.settings.get("gcp", {})
+            if not gcp_config.get("enabled", False):
+                logger.info("📦 GCP bucket manager is disabled in configuration")
+                return
+            
+            bucket_name = gcp_config.get("bucket_name")
+            if not bucket_name:
+                logger.warning("📦 GCP bucket name not configured, skipping GCP initialization")
+                return
+            
+            credentials_path = gcp_config.get("credentials_path")
+            create_bucket = gcp_config.get("create_bucket", False)
+            location = gcp_config.get("location", "US")
+            project_id = gcp_config.get("project_id")
+            
+            logger.info("📦 Initializing GCP Bucket Manager...")
+            logger.info(f"  - Bucket: {bucket_name}")
+            logger.info(f"  - Credentials: {credentials_path or 'Default/Environment'}")
+            logger.info(f"  - Create bucket: {create_bucket}")
+            logger.info(f"  - Location: {location}")
+            logger.info(f"  - Project ID: {project_id or 'From credentials'}")
+            
+            self.gcp_manager = GCSBucketManager(
+                bucket_name=bucket_name,
+                credentials_path=credentials_path,
+                create_bucket=create_bucket,
+                location=location,
+                project_id=project_id
+            )
+            
+            logger.info("✅ GCP Bucket Manager initialized successfully!")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize GCP Bucket Manager: {e}")
+            self.gcp_manager = None
+    
+    async def _upload_audio_to_gcp(self, audio_bytes: bytes, filename_prefix: str = "audio", 
+                                 custom_path: Optional[str] = None) -> Optional[str]:
+        """Upload audio bytes to GCP bucket and return the bucket path."""
+        if not self.gcp_manager:
+            logger.warning("📦 GCP bucket manager not available, skipping upload")
+            return None
 
-    if output_audio_bytes:
-        return {"audio_base64": base64.b64encode(output_audio_bytes).decode('utf-8')}
-    else:
-        return {"error": "Failed to clone voice and generate speech."}
+        try:
+            # Generate filename with timestamp
+            timestamp = int(time.time())
+            filename = f"{filename_prefix}_{timestamp}.mp3"
+            
+            # Determine bucket path
+            default_path = self.settings.get("gcp.default_upload_path", "audio/")
+            bucket_path = custom_path or default_path
+            if bucket_path:
+                full_bucket_path = f"{bucket_path.rstrip('/')}/{filename}"
+            else:
+                full_bucket_path = filename
+
+            # Create temporary file to upload
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
+                tmp_file.write(audio_bytes)
+                tmp_file_path = tmp_file.name
+
+            try:
+                # Upload to GCP
+                success = self.gcp_manager.upload_file(tmp_file_path, full_bucket_path)
+                if success:
+                    logger.info(f"📦 Successfully uploaded audio to GCP: {full_bucket_path}")
+                    return full_bucket_path
+                else:
+                    logger.error(f"📦 Failed to upload audio to GCP: {full_bucket_path}")
+                    return None
+            finally:
+                # Clean up temporary file
+                os.unlink(tmp_file_path)
+
+        except Exception as e:
+            logger.error(f"📦 Error uploading audio to GCP: {e}")
+            return None
+    
+    async def generate_speech(
+        self, 
+        text: str, 
+        voice_id: str,
+        project_id: Optional[str] = None,
+        upload_to_gcp: bool = True,
+        gcp_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Generate speech from text using existing voice ID"""
+        start_time = time.time()
+        request_id = f"speech_req_{int(time.time() * 1000)}"
+        
+        try:
+            logger.info(f"🎯 Processing speech generation request (Request ID: {request_id})")
+            logger.info(f"📝 Text: '{text[:100]}...'")
+            logger.info(f"🗣️ Voice ID: {voice_id}")
+            logger.info(f"📁 Project ID: {project_id}")
+            logger.info(f"📦 Upload to GCP: {upload_to_gcp}")
+            
+            # Validate input parameters
+            if not text or not text.strip():
+                return {
+                    "success": False,
+                    "error_message": "Text cannot be empty",
+                    "processing_time": time.time() - start_time
+                }
+            
+            if not voice_id or not voice_id.strip():
+                return {
+                    "success": False,
+                    "error_message": "Voice ID cannot be empty",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Check text length (reasonable limit)
+            max_text_length = 10000  # 10k characters
+            if len(text) > max_text_length:
+                return {
+                    "success": False,
+                    "error_message": f"Text cannot exceed {max_text_length} characters",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Generate speech
+            logger.info("🔄 Generating speech...")
+            audio_bytes = await self.tts_service.generate_speech_bytes(text, voice_id)
+            
+            if not audio_bytes:
+                return {
+                    "success": False,
+                    "error_message": "Failed to generate speech from TTS service",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Upload to GCP if requested
+            gcp_url = None
+            if upload_to_gcp:
+                gcp_url = await self._upload_audio_to_gcp(
+                    audio_bytes, 
+                    "generate_speech", 
+                    gcp_path
+                )
+            
+            processing_time = time.time() - start_time
+            
+            logger.info(f"✅ Speech generation request {request_id} completed successfully in {processing_time:.3f}s")
+            
+            response = {
+                "success": True,
+                "text": text,
+                "voice_id": voice_id,
+                "project_id": project_id,
+                "audio_size_bytes": len(audio_bytes),
+                "processing_time": processing_time,
+                "message": "Speech generated successfully"
+            }
+            
+            if gcp_url:
+                response["gcp_url"] = gcp_url
+                response["message"] += f" and uploaded to GCP: {gcp_url}"
+            else:
+                response["message"] += " (GCP upload skipped or failed)"
+            
+            return response
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing speech generation request: {str(e)}")
+            return {
+                "success": False,
+                "error_message": f"Processing error: {str(e)}",
+                "processing_time": time.time() - start_time
+            }
+    
+    async def clone_voice(
+        self, 
+        new_voice_id: str, 
+        audio_base64: str,
+        project_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Clone a voice from audio data"""
+        start_time = time.time()
+        request_id = f"clone_req_{int(time.time() * 1000)}"
+        
+        try:
+            logger.info(f"🎯 Processing voice cloning request (Request ID: {request_id})")
+            logger.info(f"🆔 New Voice ID: {new_voice_id}")
+            logger.info(f"📁 Project ID: {project_id}")
+            
+            # Validate input parameters
+            if not new_voice_id or not new_voice_id.strip():
+                return {
+                    "success": False,
+                    "error_message": "New voice ID cannot be empty",
+                    "processing_time": time.time() - start_time
+                }
+            
+            if not audio_base64:
+                return {
+                    "success": False,
+                    "error_message": "Audio data cannot be empty",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Validate voice ID format (basic validation)
+            if len(new_voice_id) < 8:
+                return {
+                    "success": False,
+                    "error_message": "Voice ID must be at least 8 characters long",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Decode and save the temporary audio file
+            try:
+                audio_bytes = base64.b64decode(audio_base64)
+                temp_file_path = self.temp_dir / f"clone_{uuid.uuid4()}.mp3"
+                with open(temp_file_path, "wb") as f:
+                    f.write(audio_bytes)
+            except Exception as e:
+                logger.error(f"Failed to decode or save audio file: {e}")
+                return {
+                    "success": False,
+                    "error_message": f"Failed to decode or save audio file: {e}",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Clone voice
+            logger.info("🔄 Cloning voice...")
+            cloned_voice_id = await self.tts_service.create_voice_from_file(temp_file_path, new_voice_id)
+            
+            # Cleanup temporary file
+            temp_file_path.unlink()
+            
+            if not cloned_voice_id:
+                return {
+                    "success": False,
+                    "error_message": "Failed to clone voice from TTS service",
+                    "processing_time": time.time() - start_time
+                }
+            
+            processing_time = time.time() - start_time
+            
+            logger.info(f"✅ Voice cloning request {request_id} completed successfully in {processing_time:.3f}s")
+            
+            return {
+                "success": True,
+                "new_voice_id": new_voice_id,
+                "cloned_voice_id": cloned_voice_id,
+                "project_id": project_id,
+                "processing_time": processing_time,
+                "message": "Voice cloned successfully"
+            }
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing voice cloning request: {str(e)}")
+            return {
+                "success": False,
+                "error_message": f"Processing error: {str(e)}",
+                "processing_time": time.time() - start_time
+            }
+    
+    async def clone_and_generate_speech(
+        self, 
+        text: str, 
+        new_voice_id: str, 
+        audio_base64: str,
+        project_id: Optional[str] = None,
+        upload_to_gcp: bool = True,
+        gcp_path: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Clone voice and generate speech in one operation"""
+        start_time = time.time()
+        request_id = f"clone_gen_req_{int(time.time() * 1000)}"
+        
+        try:
+            logger.info(f"🎯 Processing clone-and-generate request (Request ID: {request_id})")
+            logger.info(f"📝 Text: '{text[:100]}...'")
+            logger.info(f"🆔 New Voice ID: {new_voice_id}")
+            logger.info(f"📁 Project ID: {project_id}")
+            logger.info(f"📦 Upload to GCP: {upload_to_gcp}")
+            
+            # Validate input parameters
+            if not all([text, new_voice_id, audio_base64]):
+                return {
+                    "success": False,
+                    "error_message": "Missing required parameters: text, new_voice_id, or audio_base64",
+                    "processing_time": time.time() - start_time
+                }
+            
+            if not text.strip():
+                return {
+                    "success": False,
+                    "error_message": "Text cannot be empty",
+                    "processing_time": time.time() - start_time
+                }
+            
+            if len(new_voice_id) < 8:
+                return {
+                    "success": False,
+                    "error_message": "Voice ID must be at least 8 characters long",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Check text length
+            max_text_length = 10000
+            if len(text) > max_text_length:
+                return {
+                    "success": False,
+                    "error_message": f"Text cannot exceed {max_text_length} characters",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Decode and save the temporary audio file
+            try:
+                audio_bytes = base64.b64decode(audio_base64)
+                temp_file_path = self.temp_dir / f"clone_gen_{uuid.uuid4()}.mp3"
+                with open(temp_file_path, "wb") as f:
+                    f.write(audio_bytes)
+            except Exception as e:
+                logger.error(f"Failed to decode or save audio file: {e}")
+                return {
+                    "success": False,
+                    "error_message": f"Failed to decode or save audio file: {e}",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Perform the clone and speech generation
+            logger.info("🔄 Performing clone-and-generate workflow...")
+            output_audio_bytes = await self.tts_service.clone_and_generate_speech_bytes(
+                text=text,
+                audio_clone_path=str(temp_file_path),
+                new_voice_id=new_voice_id
+            )
+            
+            # Cleanup temporary file
+            temp_file_path.unlink()
+            
+            if not output_audio_bytes:
+                return {
+                    "success": False,
+                    "error_message": "Failed to complete clone-and-generate workflow",
+                    "processing_time": time.time() - start_time
+                }
+            
+            # Upload to GCP if requested
+            gcp_url = None
+            if upload_to_gcp:
+                gcp_url = await self._upload_audio_to_gcp(
+                    output_audio_bytes, 
+                    "clone_and_generate", 
+                    gcp_path
+                )
+            
+            processing_time = time.time() - start_time
+            
+            logger.info(f"✅ Clone-and-generate request {request_id} completed successfully in {processing_time:.3f}s")
+            
+            response = {
+                "success": True,
+                "text": text,
+                "new_voice_id": new_voice_id,
+                "project_id": project_id,
+                "audio_size_bytes": len(output_audio_bytes),
+                "processing_time": processing_time,
+                "message": "Clone-and-generate workflow completed successfully"
+            }
+            
+            if gcp_url:
+                response["gcp_url"] = gcp_url
+                response["message"] += f" and uploaded to GCP: {gcp_url}"
+            else:
+                response["message"] += " (GCP upload skipped or failed)"
+            
+            return response
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing clone-and-generate request: {str(e)}")
+            return {
+                "success": False,
+                "error_message": f"Processing error: {str(e)}",
+                "processing_time": time.time() - start_time
+            }
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Enhanced health check with comprehensive system information"""
+        try:
+            logger.info("🩺 Performing system health check...")
+            
+            # Check TTS service
+            service_status = self.tts_service.get_status()
+            tts_healthy = service_status.get('initialized', False)
+            logger.info(f"🤖 TTS Service health: {'✅ OK' if tts_healthy else '❌ FAILED'}")
+            
+            # Check GCP bucket manager
+            gcp_status = {"initialized": False, "status": "disabled"}
+            if self.gcp_manager:
+                try:
+                    # Test bucket access by checking if bucket exists
+                    bucket_exists = self.gcp_manager.bucket.exists() if self.gcp_manager.bucket else False
+                    gcp_status = {
+                        "initialized": True,
+                        "bucket_name": self.gcp_manager.bucket_name,
+                        "bucket_exists": bucket_exists,
+                        "status": "healthy" if bucket_exists else "bucket_not_found"
+                    }
+                    logger.info(f"📦 GCP Bucket Manager health: {'✅ OK' if bucket_exists else '⚠️ BUCKET NOT FOUND'}")
+                except Exception as e:
+                    gcp_status = {
+                        "initialized": False,
+                        "status": "error",
+                        "error": str(e)
+                    }
+                    logger.error(f"📦 GCP Bucket Manager health: ❌ ERROR - {e}")
+            else:
+                logger.info("📦 GCP Bucket Manager: ⚪ DISABLED")
+            
+            # Calculate uptime
+            uptime = time.time() - self.start_time
+            
+            # Get system information
+            import sys
+            
+            system_info = {
+                "python_version": sys.version,
+                "service_initialized": service_status.get('initialized', False),
+                "api_configured": service_status.get('api_configured', False),
+                "service_name": service_status.get('name', 'unknown'),
+                "temp_directory": str(self.temp_dir),
+                "temp_dir_exists": self.temp_dir.exists(),
+                "gcp_enabled": self.gcp_manager is not None
+            }
+            
+            # Calculate processing metrics
+            success_rate = (
+                self.successful_requests / self.total_requests 
+                if self.total_requests > 0 else 0
+            )
+            
+            processing_metrics = {
+                "total_requests": self.total_requests,
+                "successful_requests": self.successful_requests,
+                "failed_requests": self.failed_requests,
+                "success_rate": success_rate,
+                "uptime": uptime
+            }
+            
+            overall_health = tts_healthy
+            status = "healthy" if overall_health else "unhealthy"
+            
+            logger.info(f"🏥 Overall system health: {'✅ HEALTHY' if overall_health else '❌ UNHEALTHY'}")
+            
+            return {
+                "success": True,
+                "status": status,
+                "timestamp": time.time(),
+                "service_name": "TTS Service",
+                "version": "1.0.0",
+                "uptime": uptime,
+                "components": {
+                    "tts_service": tts_healthy,
+                    "gcp_bucket_manager": gcp_status
+                },
+                "system_info": system_info,
+                "processing_metrics": processing_metrics,
+                "service_status": service_status
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Health check failed: {str(e)}")
+            return {
+                "success": False,
+                "status": "unhealthy",
+                "error_message": f"Health check failed: {str(e)}"
+            }
+    
+    def get_system_info(self) -> Dict[str, Any]:
+        """Get detailed system information"""
+        try:
+            logger.info("📋 Getting system information...")
+            
+            # Get service information
+            service_status = self.tts_service.get_status()
+            
+            # Get GCP status
+            gcp_info = {"enabled": False, "status": "disabled"}
+            if self.gcp_manager:
+                try:
+                    bucket_exists = self.gcp_manager.bucket.exists() if self.gcp_manager.bucket else False
+                    gcp_info = {
+                        "enabled": True,
+                        "bucket_name": self.gcp_manager.bucket_name,
+                        "bucket_exists": bucket_exists,
+                        "status": "healthy" if bucket_exists else "bucket_not_found"
+                    }
+                except Exception as e:
+                    gcp_info = {
+                        "enabled": True,
+                        "status": "error",
+                        "error": str(e)
+                    }
+            
+            # Get system information
+            import sys
+            
+            system_info = {
+                "python_version": sys.version,
+                "service_initialized": service_status.get('initialized', False),
+                "api_configured": service_status.get('api_configured', False),
+                "service_name": service_status.get('name', 'unknown'),
+                "temp_directory": str(self.temp_dir),
+                "temp_dir_exists": self.temp_dir.exists(),
+                "gcp_enabled": self.gcp_manager is not None,
+                "gcp_info": gcp_info
+            }
+            
+            # Get CPU and memory info if available
+            try:
+                import psutil
+                system_info["cpu_count"] = psutil.cpu_count()
+                system_info["memory_total"] = psutil.virtual_memory().total / 1024**3
+            except ImportError:
+                logger.warning("psutil not available for system info")
+            except Exception as e:
+                logger.warning(f"Could not get system info: {e}")
+            
+            # Calculate processing metrics
+            uptime = time.time() - self.start_time
+            success_rate = (
+                self.successful_requests / self.total_requests 
+                if self.total_requests > 0 else 0
+            )
+            
+            processing_metrics = {
+                "total_requests": self.total_requests,
+                "successful_requests": self.successful_requests,
+                "failed_requests": self.failed_requests,
+                "success_rate": success_rate,
+                "uptime": uptime
+            }
+            
+            logger.info(f"✅ System information retrieved successfully")
+            
+            return {
+                "success": True,
+                "status": "healthy" if service_status.get('initialized', False) else "unhealthy",
+                "timestamp": time.time(),
+                "service_name": "TTS Service",
+                "version": "1.0.0",
+                "uptime": uptime,
+                "service_status": service_status,
+                "system_info": system_info,
+                "processing_metrics": processing_metrics
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting system info: {str(e)}")
+            return {
+                "success": False,
+                "error_message": f"Failed to get system info: {str(e)}"
+            }
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get processing metrics and statistics"""
+        try:
+            logger.info("📊 Getting processing metrics...")
+            
+            uptime = time.time() - self.start_time
+            success_rate = (
+                self.successful_requests / self.total_requests 
+                if self.total_requests > 0 else 0
+            )
+            
+            metrics = {
+                "total_requests": self.total_requests,
+                "successful_requests": self.successful_requests,
+                "failed_requests": self.failed_requests,
+                "success_rate": success_rate,
+                "uptime": uptime,
+                "timestamp": time.time()
+            }
+            
+            logger.info(f"✅ Processing metrics retrieved successfully")
+            
+            return {
+                "success": True,
+                "metrics": metrics
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting metrics: {str(e)}")
+            return {
+                "success": False,
+                "error_message": f"Failed to get metrics: {str(e)}"
+            }
 
 
+# Global system instance
+_system_instance: Optional[TTSServerlessSystem] = None
+
+def get_system_instance() -> TTSServerlessSystem:
+    """Get or create the system instance"""
+    global _system_instance
+    if _system_instance is None:
+        _system_instance = TTSServerlessSystem()
+    return _system_instance
+
+# UNIFIED RUNPOD HANDLER - Single Template Structure
 async def handler(job):
     """
-    The main handler for RunPod serverless requests.
-    Routes job to the appropriate function based on the 'endpoint' key.
-    """
-    _initialize_service()
+    🎯 UNIFIED RUNPOD HANDLER
+    Single template structure for ALL endpoints
     
-    job_input = job.get('input', {})
-    endpoint = job_input.get('endpoint')
+    Expected Input Format (ALL endpoints use this same structure):
+    {
+        "input": {
+            "endpoint": "generate_speech" | "clone_voice" | "clone_and_generate" | "health_check" | "system_info" | "metrics",
+            "data": {
+                // Endpoint-specific parameters go here
+                // For generate_speech and clone_and_generate:
+                //   - upload_to_gcp: bool (default: true)
+                //   - gcp_path: str (optional custom path in bucket)
+            }
+        }
+    }
+    
+    Output Format (ALL endpoints return this same structure):
+    {
+        "success": true/false,
+        "data": {
+            // Endpoint-specific response data
+            // Instead of audio_base64, now includes:
+            //   - gcp_url: string (if uploaded to GCP)
+            //   - audio_size_bytes: int
+        },
+        "error_message": "string" | null,
+        "processing_time": float,
+        "endpoint": "string"
+    }
+    """
+    
+    start_time = time.time()
+    
+    try:
+        # Extract input from RunPod job
+        input_data = job.get("input", {})
+        endpoint = input_data.get("endpoint")
+        data = input_data.get("data", {})
+        
+        if not endpoint:
+            return {
+                "success": False,
+                "data": {},
+                "error_message": "Missing required parameter: endpoint",
+                "processing_time": time.time() - start_time,
+                "endpoint": "unknown"
+            }
+        
+        logger.info(f"🚀 Processing RunPod request - Endpoint: {endpoint}")
+        
+        # Get system instance
+        system = get_system_instance()
+        
+        # Route to appropriate endpoint handler
+        if endpoint == "generate_speech":
+            # Generate Speech Endpoint
+            text = data.get("text")
+            voice_id = data.get("voice_id")
+            project_id = data.get("project_id")
+            upload_to_gcp = data.get("upload_to_gcp", True)  # Default to True
+            gcp_path = data.get("gcp_path")
+            
+            if not text or not voice_id:
+                return {
+                    "success": False,
+                    "data": {},
+                    "error_message": "Missing required parameters: text and voice_id",
+                    "processing_time": time.time() - start_time,
+                    "endpoint": endpoint
+                }
+            
+            result = await system.generate_speech(
+                text=text,
+                voice_id=voice_id,
+                project_id=project_id,
+                upload_to_gcp=upload_to_gcp,
+                gcp_path=gcp_path
+            )
+            
+            # Update metrics
+            system.total_requests += 1
+            if result["success"]:
+                system.successful_requests += 1
+            else:
+                system.failed_requests += 1
+            
+            return {
+                "success": result["success"],
+                "data": {
+                    "text": result.get("text"),
+                    "voice_id": result.get("voice_id"),
+                    "project_id": result.get("project_id"),
+                    "gcp_url": result.get("gcp_url"),
+                    "audio_size_bytes": result.get("audio_size_bytes"),
+                    "message": result.get("message")
+                },
+                "error_message": result.get("error_message"),
+                "processing_time": time.time() - start_time,
+                "endpoint": endpoint
+            }
+        
+        elif endpoint == "clone_voice":
+            # Clone Voice Endpoint
+            new_voice_id = data.get("new_voice_id")
+            audio_base64 = data.get("audio_base64")
+            project_id = data.get("project_id")
+            
+            if not new_voice_id or not audio_base64:
+                return {
+                    "success": False,
+                    "data": {},
+                    "error_message": "Missing required parameters: new_voice_id and audio_base64",
+                    "processing_time": time.time() - start_time,
+                    "endpoint": endpoint
+                }
+            
+            result = await system.clone_voice(
+                new_voice_id=new_voice_id,
+                audio_base64=audio_base64,
+                project_id=project_id
+            )
+            
+            # Update metrics
+            system.total_requests += 1
+            if result["success"]:
+                system.successful_requests += 1
+            else:
+                system.failed_requests += 1
+            
+            return {
+                "success": result["success"],
+                "data": {
+                    "new_voice_id": result.get("new_voice_id"),
+                    "cloned_voice_id": result.get("cloned_voice_id"),
+                    "project_id": result.get("project_id"),
+                    "message": result.get("message")
+                },
+                "error_message": result.get("error_message"),
+                "processing_time": time.time() - start_time,
+                "endpoint": endpoint
+            }
+        
+        elif endpoint == "clone_and_generate":
+            # Clone and Generate Speech Endpoint
+            text = data.get("text")
+            new_voice_id = data.get("new_voice_id")
+            audio_base64 = data.get("audio_base64")
+            project_id = data.get("project_id")
+            upload_to_gcp = data.get("upload_to_gcp", True)  # Default to True
+            gcp_path = data.get("gcp_path")
+            
+            if not all([text, new_voice_id, audio_base64]):
+                return {
+                    "success": False,
+                    "data": {},
+                    "error_message": "Missing required parameters: text, new_voice_id, and audio_base64",
+                    "processing_time": time.time() - start_time,
+                    "endpoint": endpoint
+                }
+            
+            result = await system.clone_and_generate_speech(
+                text=text,
+                new_voice_id=new_voice_id,
+                audio_base64=audio_base64,
+                project_id=project_id,
+                upload_to_gcp=upload_to_gcp,
+                gcp_path=gcp_path
+            )
+            
+            # Update metrics
+            system.total_requests += 1
+            if result["success"]:
+                system.successful_requests += 1
+            else:
+                system.failed_requests += 1
+            
+            return {
+                "success": result["success"],
+                "data": {
+                    "text": result.get("text"),
+                    "new_voice_id": result.get("new_voice_id"),
+                    "project_id": result.get("project_id"),
+                    "gcp_url": result.get("gcp_url"),
+                    "audio_size_bytes": result.get("audio_size_bytes"),
+                    "message": result.get("message")
+                },
+                "error_message": result.get("error_message"),
+                "processing_time": time.time() - start_time,
+                "endpoint": endpoint
+            }
+        
+        elif endpoint == "health_check":
+            # Health Check Endpoint
+            result = await system.health_check()
+            
+            return {
+                "success": result["success"],
+                "data": {
+                    "status": result.get("status"),
+                    "timestamp": result.get("timestamp"),
+                    "service_name": result.get("service_name"),
+                    "version": result.get("version"),
+                    "uptime": result.get("uptime"),
+                    "components": result.get("components"),
+                    "system_info": result.get("system_info"),
+                    "processing_metrics": result.get("processing_metrics"),
+                    "service_status": result.get("service_status")
+                },
+                "error_message": result.get("error_message"),
+                "processing_time": time.time() - start_time,
+                "endpoint": endpoint
+            }
+        
+        elif endpoint == "system_info":
+            # System Info Endpoint
+            result = system.get_system_info()
+            
+            return {
+                "success": result["success"],
+                "data": {
+                    "status": result.get("status"),
+                    "timestamp": result.get("timestamp"),
+                    "service_name": result.get("service_name"),
+                    "version": result.get("version"),
+                    "uptime": result.get("uptime"),
+                    "service_status": result.get("service_status"),
+                    "system_info": result.get("system_info"),
+                    "processing_metrics": result.get("processing_metrics")
+                },
+                "error_message": result.get("error_message"),
+                "processing_time": time.time() - start_time,
+                "endpoint": endpoint
+            }
+        
+        elif endpoint == "metrics":
+            # Metrics Endpoint
+            result = system.get_metrics()
+            
+            return {
+                "success": result["success"],
+                "data": {
+                    "metrics": result.get("metrics")
+                },
+                "error_message": result.get("error_message"),
+                "processing_time": time.time() - start_time,
+                "endpoint": endpoint
+            }
+        
+        else:
+            return {
+                "success": False,
+                "data": {},
+                "error_message": f"Unknown endpoint: {endpoint}. Available: generate_speech, clone_voice, clone_and_generate, health_check, system_info, metrics",
+                "processing_time": time.time() - start_time,
+                "endpoint": endpoint
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ RunPod handler error: {str(e)}")
+        return {
+            "success": False,
+            "data": {},
+            "error_message": f"Handler error: {str(e)}",
+            "processing_time": time.time() - start_time,
+            "endpoint": input_data.get("endpoint", "unknown")
+        }
 
-    if endpoint == 'generate_speech':
-        return await handle_generate_speech(job_input)
-    elif endpoint == 'clone_and_generate':
-        return await handle_clone_and_generate(job_input)
-    else:
-        return {"error": f"Unknown endpoint '{endpoint}'. Available: 'generate_speech', 'clone_and_generate'."}
-
-# Start Serverless Worker
+# RunPod serverless setup
 if __name__ == "__main__":
-    logger.info("Starting RunPod Serverless Worker for TTS Service.")
+    logger.info("🚀 Starting RunPod TTS System...")
+    
+    # Initialize the system at startup
+    system = get_system_instance()
+    logger.info("✅ System initialized successfully!")
+    
+    logger.info("📋 Available Endpoints:")
+    logger.info("  - generate_speech: Generate speech from text using existing voice ID")
+    logger.info("  - clone_voice: Clone a voice from audio data")
+    logger.info("  - clone_and_generate: Clone voice and generate speech in one operation")
+    logger.info("  - health_check: Get system health status")
+    logger.info("  - system_info: Get detailed system information")
+    logger.info("  - metrics: Get processing metrics and statistics")
+    
+    logger.info("📦 GCP Integration:")
+    logger.info("  - Audio files are uploaded to GCP bucket by default")
+    logger.info("  - Set upload_to_gcp=false in request data to disable GCP upload")
+    logger.info("  - Use gcp_path parameter to specify custom bucket path")
+    
+    # Start the RunPod serverless worker
     runpod.serverless.start({"handler": handler})

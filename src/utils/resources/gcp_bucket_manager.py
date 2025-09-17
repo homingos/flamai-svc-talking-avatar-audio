@@ -45,7 +45,7 @@ class GCSBucketManager:
         if credentials_path:
             self.credentials_path = credentials_path
         else:
-            self.credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+            self.credentials_path = os.getenv('GKE_SA_DEV')
         
         self.client = None
         self.bucket = None
