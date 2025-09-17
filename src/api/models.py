@@ -1,5 +1,6 @@
 # /src/api/models.py
 
+import uuid
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -24,6 +25,12 @@ class GenerateSpeechRequest(BaseModel):
         description="The ID of the voice to use.", 
         json_schema_extra={'example': "male-english-2"}
     )
+    project_id: str = Field(
+        ...,
+        min_length=1,
+        description="The project ID for tracking and organization.",
+        json_schema_extra={'example': "my-project-123"}
+    )
     upload_to_gcp: bool = Field(
         default=False,
         description="Whether to upload the generated audio to GCP bucket",
@@ -37,13 +44,29 @@ class GenerateSpeechRequest(BaseModel):
 
 # --- Response Schemas ---
 
-class VoiceCloneResponse(BaseModel):
+class BaseResponse(BaseModel):
+    """Base response model with common fields."""
+    session_id: str = Field(
+        ...,
+        description="Unique session ID for tracking this request",
+        json_schema_extra={'example': "550e8400-e29b-41d4-a716-446655440000"}
+    )
+
+class GenerateSpeechResponse(BaseResponse):
+    status: str = Field(..., description="Status of the operation")
+    message: str = Field(..., description="Human-readable message about the operation")
+
+class VoiceCloneResponse(BaseResponse):
     success: bool
     message: str
     voice_id: Optional[str] = None
     gcp_url: Optional[str] = None
 
-class HealthCheckResponse(BaseModel):
+class CloneAndGenerateResponse(BaseResponse):
+    status: str = Field(..., description="Status of the operation")
+    message: str = Field(..., description="Human-readable message about the operation")
+
+class HealthCheckResponse(BaseResponse):
     status: HealthStatus
     service_name: str
     version: str
@@ -51,3 +74,7 @@ class HealthCheckResponse(BaseModel):
 
 class ErrorDetail(BaseModel):
     detail: str
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session ID if available"
+    )

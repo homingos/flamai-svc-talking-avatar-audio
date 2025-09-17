@@ -5,7 +5,8 @@ app:
   description: "A production-ready API for Text-to-Speech and Voice Cloning."
   debug: false
   environment: "development" # Can be: production, development, testing
-  save_local_tests: true  # Set to true to save generated audio to /local_audio_tests
+  save_local_tests: true  # Set to true to save generated audio to runtime/temp
+  local_audio_directory: "runtime/temp"  # Directory to save local test audio files
 
 # Server Configuration
 server:

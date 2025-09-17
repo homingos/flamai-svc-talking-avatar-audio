@@ -17,8 +17,8 @@ router = APIRouter(prefix="/api/v1", tags=["TTS and Voice Cloning"])
 
 # Create a directory to save test outputs if configured
 if settings.get("app.save_local_tests", False):
-    OUTPUT_DIR = Path("local_audio_tests")
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR = Path(settings.get("app.local_audio_directory", "runtime/temp"))
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     logger.warning(f"Local audio saving is enabled. Files will be saved to '{OUTPUT_DIR}'.")
 
 
@@ -27,8 +27,11 @@ def _save_local_file(audio_bytes: bytes, prefix: str):
     if not settings.get("app.save_local_tests", False) or not audio_bytes:
         return
 
+    output_dir = Path(settings.get("app.local_audio_directory", "runtime/temp"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     timestamp = int(time.time())
-    output_path = OUTPUT_DIR / f"{prefix}_{timestamp}.mp3"
+    output_path = output_dir / f"{prefix}_{timestamp}.mp3"
     with open(output_path, "wb") as f:
         f.write(audio_bytes)
     logger.info(f"SUCCESS: Audio file saved locally for testing at: {output_path}")

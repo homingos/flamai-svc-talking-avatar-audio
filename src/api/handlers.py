@@ -2,6 +2,7 @@
 
 import os
 import time
+import uuid
 from fastapi import Request, HTTPException, UploadFile
 from pathlib import Path
 import tempfile
@@ -10,12 +11,16 @@ from typing import Optional
 
 from src.services.tts_service import MinimaxTtsService
 from src.core.managers import get_server_manager
-from src.api.models import GenerateSpeechRequest, HealthStatus
+from src.api.models import GenerateSpeechRequest, HealthStatus, GenerateSpeechResponse, VoiceCloneResponse, CloneAndGenerateResponse
 from src.utils.resources.logger import logger
 from src.utils.config.settings import settings
 from src.utils.resources.gcp_bucket_manager import GCSBucketManager
 
 class TtsHandler:
+    def _generate_session_id(self) -> str:
+        """Generate a unique session ID for tracking requests."""
+        return str(uuid.uuid4())
+
     def _get_tts_service(self, request: Request) -> MinimaxTtsService:
         """Retrieves the TTS service instance from the application state."""
         try:
@@ -127,9 +132,13 @@ class TtsHandler:
 
     async def generate_speech(self, request_data: GenerateSpeechRequest, request: Request) -> bytes:
         """Handles the logic for the speech generation endpoint."""
+        session_id = self._generate_session_id()
+        logger.info(f"Session {session_id}: Generating speech for project {request_data.project_id}")
+        
         tts_service = self._get_tts_service(request)
         audio_bytes = await tts_service.generate_speech_bytes(request_data.text, request_data.voice_id)
         if not audio_bytes:
+            logger.error(f"Session {session_id}: Failed to generate audio from the backend API")
             raise HTTPException(status_code=500, detail="Failed to generate audio from the backend API.")
         
         # Upload to GCP if requested
@@ -141,14 +150,18 @@ class TtsHandler:
                 "generate_speech"
             )
             if gcp_path:
-                logger.info(f"Audio uploaded to GCP: {gcp_path}")
+                logger.info(f"Session {session_id}: Audio uploaded to GCP: {gcp_path}")
             else:
-                logger.warning("Failed to upload audio to GCP")
+                logger.warning(f"Session {session_id}: Failed to upload audio to GCP")
         
+        logger.info(f"Session {session_id}: Speech generation completed successfully")
         return audio_bytes
 
-    async def clone_voice(self, new_voice_id: str, audio_file: UploadFile, request: Request) -> dict:
+    async def clone_voice(self, new_voice_id: str, audio_file: UploadFile, project_id: str, request: Request) -> VoiceCloneResponse:
         """Handles the logic for uploading a file and cloning a voice."""
+        session_id = self._generate_session_id()
+        logger.info(f"Session {session_id}: Cloning voice for project {project_id}")
+        
         tts_service = self._get_tts_service(request)
         
         # Save uploaded file to a temporary location
@@ -165,14 +178,24 @@ class TtsHandler:
         tmp_path.unlink()
 
         if cloned_voice_id:
-            return {"success": True, "message": "Voice cloned successfully.", "voice_id": cloned_voice_id}
+            logger.info(f"Session {session_id}: Voice cloned successfully with ID: {cloned_voice_id}")
+            return VoiceCloneResponse(
+                session_id=session_id,
+                success=True,
+                message="Voice cloned successfully.",
+                voice_id=cloned_voice_id
+            )
         else:
+            logger.error(f"Session {session_id}: Failed to clone voice from the backend API")
             raise HTTPException(status_code=500, detail="Failed to clone voice from the backend API.")
 
     async def clone_and_generate_speech(self, text: str, new_voice_id: str, audio_file: UploadFile, 
                                       request: Request, upload_to_gcp: bool = False, 
                                       gcp_path: Optional[str] = None) -> bytes:
         """Handles the combined clone-and-generate workflow."""
+        session_id = self._generate_session_id()
+        logger.info(f"Session {session_id}: Starting clone-and-generate workflow")
+        
         tts_service = self._get_tts_service(request)
 
         try:
@@ -191,6 +214,7 @@ class TtsHandler:
         tmp_path.unlink()
 
         if not audio_bytes:
+            logger.error(f"Session {session_id}: Failed to complete clone-and-generate workflow")
             raise HTTPException(status_code=500, detail="Failed to complete clone-and-generate workflow.")
         
         # Upload to GCP if requested
@@ -202,14 +226,18 @@ class TtsHandler:
                 "clone_and_generate"
             )
             if gcp_path_result:
-                logger.info(f"Audio uploaded to GCP: {gcp_path_result}")
+                logger.info(f"Session {session_id}: Audio uploaded to GCP: {gcp_path_result}")
             else:
-                logger.warning("Failed to upload audio to GCP")
+                logger.warning(f"Session {session_id}: Failed to upload audio to GCP")
         
+        logger.info(f"Session {session_id}: Clone-and-generate workflow completed successfully")
         return audio_bytes
 
     async def get_health_status(self, request: Request) -> dict:
         """Provides a detailed health check of the service."""
+        session_id = self._generate_session_id()
+        logger.info(f"Session {session_id}: Health check requested")
+        
         server_manager = get_server_manager(request)
         service_statuses = {name: service.get_status() for name, service in server_manager.services.items()}
         
@@ -241,6 +269,7 @@ class TtsHandler:
             overall_status = HealthStatus.UNHEALTHY
 
         return {
+            "session_id": session_id,
             "status": overall_status,
             "service_name": settings.get("app.name"),
             "version": settings.get("app.version"),
