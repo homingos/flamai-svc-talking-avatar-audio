@@ -30,17 +30,21 @@ The architecture is modular and extensible, allowing for the easy addition of ne
 ```bash
 git clone https://github.com/homingos/flamai-svc-talking-avatar-audio.git
 cd flamai-svc-talking-avatar-audio
+```
 
 ### Step 2: Install Dependencies
 It is highly recommended to use a virtual environment.
 Using uv (Recommended & Fastest):
-code
-Bash
+
 # Create a virtual environment
+```bash
 uv venv
+```
 
 # Activate it (Linux/macOS)
+```bash
 source .venv/bin/activate
+```
 
 # Activate it (Windows PowerShell)
 # .venv\Scripts\Activate.ps1
