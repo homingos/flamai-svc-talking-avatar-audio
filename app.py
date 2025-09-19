@@ -1,7 +1,9 @@
 # /app.py
 
 import os
+import json
 import uvicorn
+from typing import Optional
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -26,6 +28,58 @@ SERVICE_CLASSES: dict[str, type[AIService]] = {
     "minimax_tts": MinimaxTtsService,
 }
 
+def _get_gcp_credentials() -> tuple[Optional[str], Optional[str]]:
+    """
+    Get GCP credentials from environment variables or file path.
+    Supports both file-based credentials and JSON string in environment variables.
+    
+    Returns:
+        tuple: (credentials_path, project_id) where credentials_path can be None if using env JSON
+    """
+    # First, check for traditional file-based credentials
+    credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if credentials_path and os.path.exists(credentials_path):
+        logger.info(f"Using GCP credentials from file: {credentials_path}")
+        return credentials_path, os.getenv('GCP_PROJECT_ID')
+    
+    # Check for RunPod secrets pattern
+    runpod_secret_path = os.getenv('GKE_SA_DEV')
+    if runpod_secret_path and os.path.exists(runpod_secret_path):
+        logger.info(f"Using GCP credentials from RunPod secret file: {runpod_secret_path}")
+        return runpod_secret_path, os.getenv('GCP_PROJECT_ID')
+    
+    # Check for JSON credentials in environment variables
+    # Multiple possible environment variable names for flexibility
+    env_var_names = [
+        'GKE_SA_DEV',
+        'GOOGLE_APPLICATION_CREDENTIALS_JSON',
+        'GCP_SERVICE_ACCOUNT_KEY'
+    ]
+    
+    for env_var in env_var_names:
+        service_account_json = os.environ.get(env_var)
+        if service_account_json:
+            try:
+                # Validate JSON
+                service_account_info = json.loads(service_account_json)
+                
+                # Validate that it looks like a service account JSON
+                required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
+                if all(field in service_account_info for field in required_fields):
+                    logger.info(f"Found valid service account JSON in environment variable: {env_var}")
+                    project_id = service_account_info.get('project_id') or os.getenv('GCP_PROJECT_ID')
+                    return None, project_id  # Return None for credentials_path to indicate env JSON should be used
+                else:
+                    logger.warning(f"Service account JSON in {env_var} is missing required fields")
+                    
+            except json.JSONDecodeError as e:
+                logger.warning(f"Invalid JSON in environment variable {env_var}: {e}")
+            except Exception as e:
+                logger.warning(f"Error processing service account JSON from {env_var}: {e}")
+    
+    logger.info("No GCP credentials found in environment variables or files")
+    return None, os.getenv('GCP_PROJECT_ID')
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -39,27 +93,35 @@ async def lifespan(app: FastAPI):
         app.state.process_manager = process_manager
         app.state.server_manager = server_manager
 
-        # Initialize GCP Bucket Manager
+        # Initialize GCP Bucket Manager with enhanced credential handling
         bucket_name = os.getenv('GCP_BUCKET_NAME')
         if bucket_name:
             try:
-                # Try both environment variable patterns
-                credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS') or os.getenv('GKE_SA_DEV')
+                # Get credentials using the enhanced method
+                credentials_path, project_id = _get_gcp_credentials()
+                
+                logger.info("Initializing GCP Bucket Manager...")
+                logger.info(f"  - Bucket: {bucket_name}")
+                logger.info(f"  - Credentials: {'Environment JSON' if not credentials_path else credentials_path}")
+                logger.info(f"  - Project ID: {project_id}")
                 
                 gcp_bucket_manager = GCSBucketManager(
                     bucket_name=bucket_name,
-                    credentials_path=credentials_path,
+                    credentials_path=credentials_path,  # Will be None if using env JSON
                     create_bucket=os.getenv('GCP_CREATE_BUCKET', 'false').lower() == 'true',
                     location=os.getenv('GCP_BUCKET_LOCATION', 'US'),
-                    project_id=os.getenv('GCP_PROJECT_ID')
+                    project_id=project_id
                 )
                 app.state.gcp_bucket_manager = gcp_bucket_manager
-                logger.info(f"GCP Bucket Manager initialized for bucket: {bucket_name}")
+                logger.info(f"✅ GCP Bucket Manager initialized successfully for bucket: {bucket_name}")
+                
             except Exception as e:
-                logger.error(f"Failed to initialize GCP Bucket Manager: {e}")
+                logger.error(f"❌ Failed to initialize GCP Bucket Manager: {e}")
+                logger.error("This might be due to missing or invalid GCP credentials")
+                logger.info("GCP upload functionality will be disabled")
                 app.state.gcp_bucket_manager = None
         else:
-            logger.warning("GCP_BUCKET_NAME not set. GCP upload functionality will be disabled.")
+            logger.warning("📦 GCP_BUCKET_NAME not set. GCP upload functionality will be disabled.")
             app.state.gcp_bucket_manager = None
 
         await register_services(server_manager)
@@ -68,10 +130,10 @@ async def lifespan(app: FastAPI):
         if not await server_manager.initialize():
             raise RuntimeError("Server manager initialization failed.")
         
-        logger.info(f"{settings.get('app.name')} started successfully. All services are ready.")
+        logger.info(f"✅ {settings.get('app.name')} started successfully. All services are ready.")
 
     except Exception as e:
-        logger.error(f"Error during application startup: {e}", exc_info=True)
+        logger.error(f"❌ Error during application startup: {e}", exc_info=True)
         raise
 
     yield

@@ -1,21 +1,19 @@
 import os
 import json
-from typing import Optional, Union, List, BinaryIO
-from pathlib import Path
-from google.cloud import storage
-from google.cloud.exceptions import NotFound, Forbidden, Conflict
-from google.oauth2 import service_account
 import logging
+from typing import List, Optional, Union
+from google.cloud import storage
+from google.cloud.exceptions import NotFound, Conflict
+from google.oauth2 import service_account
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Set up logger
 logger = logging.getLogger(__name__)
-
 
 class GCSBucketManager:
     """
     A comprehensive Google Cloud Storage bucket manager that supports both
     authenticated and unauthenticated access to GCS buckets.
+    Enhanced to support RunPod serverless environment with JSON credentials from environment variables.
     """
     
     def __init__(self, bucket_name: str, credentials_path: Optional[str] = None, 
@@ -27,7 +25,7 @@ class GCSBucketManager:
         Args:
             bucket_name (str): Name of the GCS bucket
             credentials_path (str, optional): Path to the credentials.json file.
-                If None, will check GOOGLE_APPLICATION_CREDENTIALS environment variable,
+                If None, will check for service account JSON in environment variables,
                 then attempt to use default credentials or anonymous access.
             create_bucket (bool): Whether to create the bucket if it doesn't exist.
                 Requires authenticated access. Default: False
@@ -40,66 +38,125 @@ class GCSBucketManager:
         self.create_bucket = create_bucket
         self.location = location
         self.project_id = project_id
-        
-        # Priority order: explicit parameter > environment variable > None
-        if credentials_path:
-            self.credentials_path = credentials_path
-        else:
-            self.credentials_path = os.getenv('GKE_SA_DEV')
+        self.credentials_path = credentials_path
         
         self.client = None
         self.bucket = None
         
         self._initialize_client()
     
+    def _get_service_account_from_env(self) -> Optional[dict]:
+        """
+        Get service account info from environment variables.
+        Supports multiple environment variable patterns used in different platforms.
+        
+        Returns:
+            Optional[dict]: Service account info dictionary, None if not found
+        """
+        # List of possible environment variable names for service account JSON
+        env_var_names = [
+            'GKE_SA_DEV',
+            'RUNPOD_SECRET_GKE_SA_DEV', 
+            'GOOGLE_APPLICATION_CREDENTIALS_JSON',
+            'GCP_SERVICE_ACCOUNT_KEY',
+            'SERVICE_ACCOUNT_JSON'
+        ]
+        
+        for env_var in env_var_names:
+            service_account_json = os.environ.get(env_var)
+            if service_account_json:
+                try:
+                    logger.info(f"Found service account JSON in environment variable: {env_var}")
+                    service_account_info = json.loads(service_account_json)
+                    
+                    # Validate that it looks like a service account JSON
+                    required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
+                    if all(field in service_account_info for field in required_fields):
+                        logger.info("Service account JSON validation successful")
+                        return service_account_info
+                    else:
+                        logger.warning(f"Service account JSON in {env_var} is missing required fields")
+                        
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Invalid JSON in environment variable {env_var}: {e}")
+                except Exception as e:
+                    logger.warning(f"Error processing service account JSON from {env_var}: {e}")
+        
+        logger.info("No valid service account JSON found in environment variables")
+        return None
+    
     def _initialize_client(self):
         """Initialize the GCS client with appropriate authentication."""
         try:
+            # Priority order:
+            # 1. Service account file (if credentials_path provided and file exists)
+            # 2. Service account JSON from environment variables
+            # 3. Default credentials (GOOGLE_APPLICATION_CREDENTIALS env var, gcloud auth, etc.)
+            # 4. Anonymous client (for public buckets only)
+            
+            credentials = None
+            
+            # Option 1: Service account file
             if self.credentials_path and os.path.exists(self.credentials_path):
-                # Use service account credentials
-                logger.info(f"Using service account credentials from {self.credentials_path}")
+                logger.info(f"Using service account credentials from file: {self.credentials_path}")
                 credentials = service_account.Credentials.from_service_account_file(
-                    self.credentials_path
+                    self.credentials_path,
+                    scopes=['https://www.googleapis.com/auth/cloud-platform']
                 )
-                self.client = storage.Client(credentials=credentials)
                 
-                # Extract project_id from credentials if not provided
+                # Extract project_id from credentials file if not provided
                 if not self.project_id:
                     try:
                         with open(self.credentials_path, 'r') as f:
                             cred_data = json.load(f)
                             self.project_id = cred_data.get('project_id')
+                            logger.info(f"Extracted project_id from credentials file: {self.project_id}")
                     except Exception as e:
-                        logger.warning(f"Could not extract project_id from credentials: {e}")
+                        logger.warning(f"Could not extract project_id from credentials file: {e}")
+            
+            # Option 2: Service account JSON from environment variables
+            elif not credentials:
+                service_account_info = self._get_service_account_from_env()
+                if service_account_info:
+                    try:
+                        logger.info("Using service account credentials from environment variable")
+                        credentials = service_account.Credentials.from_service_account_info(
+                            service_account_info,
+                            scopes=['https://www.googleapis.com/auth/cloud-platform']
+                        )
                         
-            elif self.credentials_path:
-                # Credentials path was provided but file doesn't exist
-                logger.warning(f"Credentials file not found at {self.credentials_path}, falling back to default authentication")
-                try:
-                    # Try default credentials first (env variables, gcloud auth, etc.)
-                    self.client = storage.Client()
-                    logger.info("Using default credentials")
-                except Exception as e:
-                    logger.warning(f"Default credentials failed: {e}")
-                    if self.create_bucket:
-                        raise ValueError("Cannot create bucket without proper authentication")
-                    # Fallback to anonymous client for public buckets
-                    self.client = storage.Client.create_anonymous_client()
-                    logger.info("Using anonymous client for public bucket access")
+                        # Extract project_id from service account info if not provided
+                        if not self.project_id:
+                            self.project_id = service_account_info.get('project_id')
+                            logger.info(f"Extracted project_id from service account JSON: {self.project_id}")
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to create credentials from service account JSON: {e}")
+                        credentials = None
+            
+            # Initialize client with credentials or fall back to default/anonymous
+            if credentials:
+                self.client = storage.Client(credentials=credentials, project=self.project_id)
+                logger.info("Successfully initialized GCS client with service account credentials")
             else:
-                # No credentials path provided
-                logger.info("No credentials path provided, attempting to use default credentials or anonymous access")
+                # Option 3: Try default credentials
                 try:
-                    # Try default credentials first (env variables, gcloud auth, etc.)
+                    logger.info("Attempting to use default credentials")
                     self.client = storage.Client()
-                    logger.info("Using default credentials")
+                    logger.info("Successfully initialized GCS client with default credentials")
                 except Exception as e:
                     logger.warning(f"Default credentials failed: {e}")
+                    
+                    # Option 4: Anonymous client (for public buckets only)
                     if self.create_bucket:
-                        raise ValueError("Cannot create bucket without proper authentication")
-                    # Fallback to anonymous client for public buckets
-                    self.client = storage.Client.create_anonymous_client()
-                    logger.info("Using anonymous client for public bucket access")
+                        raise ValueError("Cannot create bucket without proper authentication. Please provide service account credentials.")
+                    
+                    try:
+                        self.client = storage.Client.create_anonymous_client()
+                        logger.info("Using anonymous client for public bucket access")
+                    except Exception as e2:
+                        logger.error(f"Failed to create anonymous client: {e2}")
+                        raise ValueError(f"Failed to initialize GCS client: {e}")
             
             # Get or create bucket reference
             self.bucket = self._get_or_create_bucket()
