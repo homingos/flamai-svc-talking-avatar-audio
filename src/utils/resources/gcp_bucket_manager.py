@@ -595,3 +595,51 @@ class GCSBucketManager:
         except Exception as e:
             logger.error(f"Failed to download directory: {e}")
             return False
+
+    def get_public_url(self, bucket_path: str) -> str:
+        """
+        Generate a public URL for a blob in the bucket.
+        
+        Args:
+            bucket_path (str): Path of the blob in the bucket (e.g., "audio/files/myfile.mp3")
+        
+        Returns:
+            str: Public URL for the blob
+        """
+        # Normalize path separators for consistency
+        blob_name = bucket_path.replace('\\', '/')
+        
+        # Generate public URL using the standard GCS format
+        public_url = f"https://storage.googleapis.com/{self.bucket_name}/{blob_name}"
+        logger.info(f"Generated public URL for {blob_name}: {public_url}")
+        return public_url
+    
+    def get_signed_url(self, bucket_path: str, expiration_minutes: int = 60) -> Optional[str]:
+        """
+        Generate a signed URL for private access to a blob.
+        
+        Args:
+            bucket_path (str): Path of the blob in the bucket (e.g., "audio/files/myfile.mp3")
+            expiration_minutes (int): URL expiration time in minutes (default: 60)
+        
+        Returns:
+            Optional[str]: Signed URL for the blob, None if failed
+        """
+        try:
+            from datetime import datetime, timedelta
+            
+            # Normalize path separators for consistency
+            blob_name = bucket_path.replace('\\', '/')
+            
+            blob = self.bucket.blob(blob_name)
+            
+            # Generate signed URL
+            expiration = datetime.utcnow() + timedelta(minutes=expiration_minutes)
+            signed_url = blob.generate_signed_url(expiration=expiration, method='GET')
+            
+            logger.info(f"Generated signed URL for {blob_name} (expires in {expiration_minutes} minutes)")
+            return signed_url
+            
+        except Exception as e:
+            logger.error(f"Failed to generate signed URL for {blob_name}: {e}")
+            return None
