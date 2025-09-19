@@ -43,9 +43,12 @@ async def lifespan(app: FastAPI):
         bucket_name = os.getenv('GCP_BUCKET_NAME')
         if bucket_name:
             try:
+                # Try both environment variable patterns
+                credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS') or os.getenv('GKE_SA_DEV')
+                
                 gcp_bucket_manager = GCSBucketManager(
                     bucket_name=bucket_name,
-                    credentials_path=os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),
+                    credentials_path=credentials_path,
                     create_bucket=os.getenv('GCP_CREATE_BUCKET', 'false').lower() == 'true',
                     location=os.getenv('GCP_BUCKET_LOCATION', 'US'),
                     project_id=os.getenv('GCP_PROJECT_ID')
