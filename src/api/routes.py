@@ -9,7 +9,14 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from src.api.handlers import TtsHandler, get_tts_handler
-from src.api.models import ErrorDetail, GenerateSpeechRequest, HealthCheckResponse, VoiceCloneResponse
+from src.api.models import (
+    ErrorDetail, 
+    GenerateSpeechRequest, 
+    GenerateSpeechResponse,
+    CloneAndGenerateResponse,
+    HealthCheckResponse, 
+    VoiceCloneResponse
+)
 from src.utils.config.settings import settings
 from src.utils.resources.logger import logger
 
@@ -41,8 +48,9 @@ def _save_local_file(audio_bytes: bytes, prefix: str):
     "/tts/generate",
     summary="Generate Speech from Text",
     description="Synthesizes audio from the provided text using an existing voice ID. Optionally uploads to GCP bucket.",
+    response_model=GenerateSpeechResponse,
     responses={
-        200: {"content": {"audio/mpeg": {}}, "description": "Successful audio generation."},
+        200: {"model": GenerateSpeechResponse, "description": "Successful audio generation."},
         400: {"model": ErrorDetail, "description": "Invalid input."},
         500: {"model": ErrorDetail, "description": "Internal server error."},
     },
@@ -53,12 +61,18 @@ async def generate_speech(
     handler: TtsHandler = Depends(get_tts_handler),
 ):
     """
-    Generates audio and streams it back as an MP3 file.
+    Generates audio and returns response with optional GCP URL.
     If upload_to_gcp is True, also saves to temp directory and uploads to GCP bucket.
     """
-    audio_bytes = await handler.generate_speech(request_data, request)
+    audio_bytes, gcp_url, session_id = await handler.generate_speech(request_data, request)
     _save_local_file(audio_bytes, "generate_speech")
-    return {"status": "success", "message": "Audio generated successfully"}
+    
+    return GenerateSpeechResponse(
+        session_id=session_id,
+        status="success",
+        message="Audio generated successfully",
+        gcp_url=gcp_url
+    )
 
 
 @router.post(
@@ -89,8 +103,9 @@ async def clone_voice(
     "/voice/clone-and-generate",
     summary="Clone Voice and Generate Speech (Automated Workflow)",
     description="The primary automated endpoint. Uploads an audio file, clones a new voice, and immediately generates speech with it. Optionally uploads to GCP bucket.",
+    response_model=CloneAndGenerateResponse,
     responses={
-        200: {"content": {"audio/mpeg": {}}, "description": "Successful audio generation."},
+        200: {"model": CloneAndGenerateResponse, "description": "Successful audio generation."},
         400: {"model": ErrorDetail, "description": "Invalid input."},
         500: {"model": ErrorDetail, "description": "Internal server error."},
     },
@@ -120,11 +135,17 @@ async def clone_and_generate(
     Performs the full clone-and-speak workflow in a single API call.
     If upload_to_gcp is True, also saves to temp directory and uploads to GCP bucket.
     """
-    audio_bytes = await handler.clone_and_generate_speech(
+    audio_bytes, gcp_url, session_id = await handler.clone_and_generate_speech(
         text, new_voice_id, audio_file, request, upload_to_gcp, gcp_path
     )
     _save_local_file(audio_bytes, "clone_and_generate")
-    return {"status": "success", "message": "Audio generated successfully"}
+    
+    return CloneAndGenerateResponse(
+        session_id=session_id,
+        status="success",
+        message="Audio generated successfully",
+        gcp_url=gcp_url,
+    )
 
 
 @router.get("/health", response_model=HealthCheckResponse, summary="Service Health Check")
@@ -133,3 +154,62 @@ async def health_check(request: Request, handler: TtsHandler = Depends(get_tts_h
     Performs a health check on the API and its dependent services.
     """
     return await handler.get_health_status(request)
+
+
+@router.get("/debug/gcp", summary="GCP Debug Information")
+async def debug_gcp(request: Request, handler: TtsHandler = Depends(get_tts_handler)):
+    """
+    Provides detailed debugging information about GCP configuration and status.
+    """
+    import os
+    
+    # Get GCP manager
+    gcp_manager = handler._get_gcp_manager(request)
+    
+    debug_info = {
+        "environment_variables": {
+            "GCP_BUCKET_NAME": os.getenv('GCP_BUCKET_NAME'),
+            "GOOGLE_APPLICATION_CREDENTIALS": os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),
+            "GKE_SA_DEV": os.getenv('GKE_SA_DEV'),
+            "GCP_PROJECT_ID": os.getenv('GCP_PROJECT_ID'),
+            "GCP_CREATE_BUCKET": os.getenv('GCP_CREATE_BUCKET'),
+            "GCP_BUCKET_LOCATION": os.getenv('GCP_BUCKET_LOCATION'),
+            "BUCKET_PATH": os.getenv('BUCKET_PATH')
+        },
+        "gcp_manager_status": {
+            "available": gcp_manager is not None,
+            "bucket_name": gcp_manager.bucket_name if gcp_manager else None,
+            "credentials_path": gcp_manager.credentials_path if gcp_manager else None,
+            "project_id": gcp_manager.project_id if gcp_manager else None,
+            "client_available": gcp_manager.client is not None if gcp_manager else False,
+            "bucket_available": gcp_manager.bucket is not None if gcp_manager else False
+        },
+        "config_settings": {
+            "gcp_enabled": settings.get("gcp.enabled"),
+            "gcp_bucket_name": settings.get("gcp.bucket_name"),
+            "gcp_credentials_path": settings.get("gcp.credentials_path"),
+            "gcp_default_upload_path": settings.get("gcp.default_upload_path")
+        }
+    }
+    
+    # Test bucket access if manager is available
+    if gcp_manager:
+        try:
+            # Try to list first few objects to test access
+            blobs = list(gcp_manager.bucket.list_blobs(max_results=1))
+            debug_info["bucket_test"] = {
+                "accessible": True,
+                "message": "Bucket is accessible"
+            }
+        except Exception as e:
+            debug_info["bucket_test"] = {
+                "accessible": False,
+                "error": str(e)
+            }
+    else:
+        debug_info["bucket_test"] = {
+            "accessible": False,
+            "error": "GCP manager not available"
+        }
+    
+    return debug_info

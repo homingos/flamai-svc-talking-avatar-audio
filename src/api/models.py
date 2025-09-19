@@ -55,6 +55,11 @@ class BaseResponse(BaseModel):
 class GenerateSpeechResponse(BaseResponse):
     status: str = Field(..., description="Status of the operation")
     message: str = Field(..., description="Human-readable message about the operation")
+    gcp_url: Optional[str] = Field(
+        default=None,
+        description="Public URL of the uploaded audio file in GCP bucket",
+        json_schema_extra={'example': "https://storage.googleapis.com/my-bucket/audio/generate_speech_1234567890.mp3"}
+    )
 
 class VoiceCloneResponse(BaseResponse):
     success: bool
@@ -65,6 +70,11 @@ class VoiceCloneResponse(BaseResponse):
 class CloneAndGenerateResponse(BaseResponse):
     status: str = Field(..., description="Status of the operation")
     message: str = Field(..., description="Human-readable message about the operation")
+    gcp_url: Optional[str] = Field(
+        default=None,
+        description="Public URL of the uploaded audio file in GCP bucket",
+        json_schema_extra={'example': "https://storage.googleapis.com/my-bucket/audio/clone_and_generate_1234567890.mp3"}
+    )
 
 class HealthCheckResponse(BaseResponse):
     status: HealthStatus

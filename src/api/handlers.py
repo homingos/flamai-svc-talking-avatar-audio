@@ -40,7 +40,12 @@ class TtsHandler:
     def _get_gcp_manager(self, request: Request) -> Optional[GCSBucketManager]:
         """Retrieves the GCP bucket manager instance from the application state."""
         try:
-            return getattr(request.app.state, 'gcp_bucket_manager', None)
+            gcp_manager = getattr(request.app.state, 'gcp_bucket_manager', None)
+            if gcp_manager:
+                logger.info("GCP bucket manager is available")
+            else:
+                logger.warning("GCP bucket manager is not available")
+            return gcp_manager
         except Exception as e:
             logger.error(f"Failed to retrieve GCP bucket manager: {e}")
             return None
@@ -118,6 +123,8 @@ class TtsHandler:
                 else:
                     full_bucket_path = filename
 
+                logger.info(f"Attempting to upload to GCP bucket path: {full_bucket_path}")
+                
                 # Upload from temp file
                 success = gcp_manager.upload_file(local_temp_path, full_bucket_path)
                 if success:
@@ -127,13 +134,16 @@ class TtsHandler:
                     logger.error(f"Failed to upload audio to GCP: {full_bucket_path}")
             except Exception as e:
                 logger.error(f"Error uploading audio to GCP: {e}")
+        else:
+            logger.warning("GCP manager not available, skipping upload")
         
         return gcp_path
 
-    async def generate_speech(self, request_data: GenerateSpeechRequest, request: Request) -> bytes:
+    async def generate_speech(self, request_data: GenerateSpeechRequest, request: Request) -> tuple[bytes, Optional[str], str]:
         """Handles the logic for the speech generation endpoint."""
         session_id = self._generate_session_id()
         logger.info(f"Session {session_id}: Generating speech for project {request_data.project_id}")
+        logger.info(f"Session {session_id}: Upload to GCP requested: {request_data.upload_to_gcp}")
         
         tts_service = self._get_tts_service(request)
         audio_bytes = await tts_service.generate_speech_bytes(request_data.text, request_data.voice_id)
@@ -141,8 +151,11 @@ class TtsHandler:
             logger.error(f"Session {session_id}: Failed to generate audio from the backend API")
             raise HTTPException(status_code=500, detail="Failed to generate audio from the backend API.")
         
+        gcp_url = None
+        
         # Upload to GCP if requested
         if request_data.upload_to_gcp:
+            logger.info(f"Session {session_id}: Starting GCP upload process")
             gcp_path = await self._save_to_temp_and_upload(
                 audio_bytes, 
                 request, 
@@ -151,16 +164,25 @@ class TtsHandler:
             )
             if gcp_path:
                 logger.info(f"Session {session_id}: Audio uploaded to GCP: {gcp_path}")
+                # Generate public URL
+                gcp_manager = self._get_gcp_manager(request)
+                if gcp_manager:
+                    gcp_url = gcp_manager.get_public_url(gcp_path)
+                    logger.info(f"Session {session_id}: Generated public URL: {gcp_url}")
+                else:
+                    logger.error(f"Session {session_id}: GCP manager not available for URL generation")
             else:
                 logger.warning(f"Session {session_id}: Failed to upload audio to GCP")
+        else:
+            logger.info(f"Session {session_id}: GCP upload not requested, skipping")
         
-        logger.info(f"Session {session_id}: Speech generation completed successfully")
-        return audio_bytes
+        logger.info(f"Session {session_id}: Speech generation completed successfully. GCP URL: {gcp_url}")
+        return audio_bytes, gcp_url, session_id
 
-    async def clone_voice(self, new_voice_id: str, audio_file: UploadFile, project_id: str, request: Request) -> VoiceCloneResponse:
+    async def clone_voice(self, new_voice_id: str, audio_file: UploadFile, request: Request) -> VoiceCloneResponse:
         """Handles the logic for uploading a file and cloning a voice."""
         session_id = self._generate_session_id()
-        logger.info(f"Session {session_id}: Cloning voice for project {project_id}")
+        logger.info(f"Session {session_id}: Cloning voice with ID: {new_voice_id}")
         
         tts_service = self._get_tts_service(request)
         
@@ -191,10 +213,11 @@ class TtsHandler:
 
     async def clone_and_generate_speech(self, text: str, new_voice_id: str, audio_file: UploadFile, 
                                       request: Request, upload_to_gcp: bool = False, 
-                                      gcp_path: Optional[str] = None) -> bytes:
+                                      gcp_path: Optional[str] = None) -> tuple[bytes, Optional[str], str]:
         """Handles the combined clone-and-generate workflow."""
         session_id = self._generate_session_id()
         logger.info(f"Session {session_id}: Starting clone-and-generate workflow")
+        logger.info(f"Session {session_id}: Upload to GCP requested: {upload_to_gcp}")
         
         tts_service = self._get_tts_service(request)
 
@@ -217,8 +240,11 @@ class TtsHandler:
             logger.error(f"Session {session_id}: Failed to complete clone-and-generate workflow")
             raise HTTPException(status_code=500, detail="Failed to complete clone-and-generate workflow.")
         
+        gcp_url = None
+        
         # Upload to GCP if requested
         if upload_to_gcp:
+            logger.info(f"Session {session_id}: Starting GCP upload process")
             gcp_path_result = await self._save_to_temp_and_upload(
                 audio_bytes, 
                 request, 
@@ -227,11 +253,20 @@ class TtsHandler:
             )
             if gcp_path_result:
                 logger.info(f"Session {session_id}: Audio uploaded to GCP: {gcp_path_result}")
+                # Generate public URL
+                gcp_manager = self._get_gcp_manager(request)
+                if gcp_manager:
+                    gcp_url = gcp_manager.get_public_url(gcp_path_result)
+                    logger.info(f"Session {session_id}: Generated public URL: {gcp_url}")
+                else:
+                    logger.error(f"Session {session_id}: GCP manager not available for URL generation")
             else:
                 logger.warning(f"Session {session_id}: Failed to upload audio to GCP")
+        else:
+            logger.info(f"Session {session_id}: GCP upload not requested, skipping")
         
-        logger.info(f"Session {session_id}: Clone-and-generate workflow completed successfully")
-        return audio_bytes
+        logger.info(f"Session {session_id}: Clone-and-generate workflow completed successfully. GCP URL: {gcp_url}")
+        return audio_bytes, gcp_url, session_id
 
     async def get_health_status(self, request: Request) -> dict:
         """Provides a detailed health check of the service."""
@@ -275,6 +310,52 @@ class TtsHandler:
             "version": settings.get("app.version"),
             "services": service_statuses
         }
+
+    async def test_gcp_upload(self, request: Request) -> dict:
+        """Test GCP upload functionality with a dummy file."""
+        session_id = self._generate_session_id()
+        logger.info(f"Session {session_id}: Testing GCP upload functionality")
+        
+        # Create dummy audio data
+        dummy_audio = b"dummy audio data for testing"
+        
+        result = {
+            "session_id": session_id,
+            "gcp_manager_available": False,
+            "upload_success": False,
+            "gcp_url": None,
+            "error": None
+        }
+        
+        try:
+            gcp_manager = self._get_gcp_manager(request)
+            if not gcp_manager:
+                result["error"] = "GCP manager not available"
+                return result
+            
+            result["gcp_manager_available"] = True
+            
+            # Try to upload dummy data
+            gcp_path = await self._save_to_temp_and_upload(
+                dummy_audio, 
+                request, 
+                "test/", 
+                "test_upload"
+            )
+            
+            if gcp_path:
+                result["upload_success"] = True
+                result["gcp_url"] = gcp_manager.get_public_url(gcp_path)
+                logger.info(f"Session {session_id}: Test upload successful: {result['gcp_url']}")
+            else:
+                result["error"] = "Upload failed - check logs for details"
+                logger.error(f"Session {session_id}: Test upload failed")
+                
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"Session {session_id}: Test upload error: {e}")
+        
+        return result
 
 # Dependency Injection factory
 def get_tts_handler() -> TtsHandler:
