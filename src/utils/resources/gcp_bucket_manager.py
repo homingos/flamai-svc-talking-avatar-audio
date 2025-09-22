@@ -57,10 +57,8 @@ class GCSBucketManager:
         # List of possible environment variable names for service account JSON
         env_var_names = [
             'GKE_SA_DEV',
-            'RUNPOD_SECRET_GKE_SA_DEV', 
+            'GKE_SA_PROD',
             'GOOGLE_APPLICATION_CREDENTIALS_JSON',
-            'GCP_SERVICE_ACCOUNT_KEY',
-            'SERVICE_ACCOUNT_JSON'
         ]
         
         for env_var in env_var_names:
