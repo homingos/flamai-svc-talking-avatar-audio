@@ -702,7 +702,7 @@ class GCSBucketManager:
             logger.error(f"Failed to generate signed URL for {blob_name}: {e}")
             return None
 
-    def generate_structured_path(self, base_path: str, project_id: str, filename: str) -> str:
+    def generate_structured_path(self, base_path: str, project_id: str, filename: Optional[str] = None, filename_prefix: str = "audio") -> str:
         """
         Generate a structured path for file uploads.
         
@@ -712,7 +712,8 @@ class GCSBucketManager:
         Args:
             base_path (str): Base path from configuration (e.g., "talking-avatar")
             project_id (str): Project ID for organization
-            filename (str): Name of the file to upload
+            filename (str, optional): Custom filename for the file. If None, generates timestamp-based filename.
+            filename_prefix (str): Prefix for auto-generated filename (default: "audio")
             
         Returns:
             str: Complete structured path for the file
@@ -720,6 +721,11 @@ class GCSBucketManager:
         try:
             # Generate date in format: YYYY-MM-DD
             date_str = datetime.now().strftime("%Y-%m-%d")
+            
+            # Generate filename if not provided
+            if filename is None:
+                timestamp = int(datetime.now().timestamp())
+                filename = f"{filename_prefix}_{timestamp}.mp3"
             
             # Construct the structured path
             structured_path = f"{base_path.strip('/')}/{project_id}/{date_str}/audio/{filename}"
@@ -732,5 +738,8 @@ class GCSBucketManager:
             
         except Exception as e:
             logger.error(f"Failed to generate structured path: {e}")
-            # Fallback to simple filename
+            # Fallback to simple filename or generate one
+            if filename is None:
+                timestamp = int(datetime.now().timestamp())
+                filename = f"{filename_prefix}_{timestamp}.mp3"
             return filename
