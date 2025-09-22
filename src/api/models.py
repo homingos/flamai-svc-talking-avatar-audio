@@ -36,6 +36,11 @@ class GenerateSpeechRequest(BaseModel):
         description="Whether to upload the generated audio to GCP bucket",
         json_schema_extra={'example': False}
     )
+    filename: Optional[str] = Field(
+        default=None,
+        description="Optional custom filename for the uploaded file (e.g., 'my_audio.mp3'). If not provided, a timestamp-based filename will be generated.",
+        json_schema_extra={'example': "custom_speech.mp3"}
+    )
 
 # --- Response Schemas ---
 

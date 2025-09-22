@@ -131,6 +131,11 @@ async def clone_and_generate(
         default=False,
         description="Whether to upload the generated audio to GCP bucket"
     ),
+    filename: Optional[str] = Form(
+        default=None,
+        description="Optional custom filename for the uploaded file (e.g., 'my_audio.mp3'). If not provided, a timestamp-based filename will be generated.",
+        examples=["custom_speech.mp3"]
+    ),
     handler: TtsHandler = Depends(get_tts_handler),
 ):
     """
@@ -138,7 +143,7 @@ async def clone_and_generate(
     If upload_to_gcp is True, also saves to temp directory and uploads to GCP bucket.
     """
     audio_bytes, gcp_url, session_id = await handler.clone_and_generate_speech(
-        text, new_voice_id, audio_file, request, project_id, upload_to_gcp
+        text, new_voice_id, audio_file, request, project_id, upload_to_gcp, filename
     )
     _save_local_file(audio_bytes, "clone_and_generate")
     
