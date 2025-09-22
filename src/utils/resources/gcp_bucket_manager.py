@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from datetime import datetime
 from typing import List, Optional, Union
 from google.cloud import storage
 from google.cloud.exceptions import NotFound, Conflict
@@ -700,3 +701,36 @@ class GCSBucketManager:
         except Exception as e:
             logger.error(f"Failed to generate signed URL for {blob_name}: {e}")
             return None
+
+    def generate_structured_path(self, base_path: str, project_id: str, filename: str) -> str:
+        """
+        Generate a structured path for file uploads.
+        
+        Format: <base_path>/<project_id>/<date>/audio/<filename>
+        Example: talking-avatar/my-project-123/2024-01-15/audio/file.mp3
+        
+        Args:
+            base_path (str): Base path from configuration (e.g., "talking-avatar")
+            project_id (str): Project ID for organization
+            filename (str): Name of the file to upload
+            
+        Returns:
+            str: Complete structured path for the file
+        """
+        try:
+            # Generate date in format: YYYY-MM-DD
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            
+            # Construct the structured path
+            structured_path = f"{base_path.strip('/')}/{project_id}/{date_str}/audio/{filename}"
+            
+            # Normalize path separators for consistency
+            structured_path = structured_path.replace('\\', '/')
+            
+            logger.info(f"Generated structured path: {structured_path}")
+            return structured_path
+            
+        except Exception as e:
+            logger.error(f"Failed to generate structured path: {e}")
+            # Fallback to simple filename
+            return filename
