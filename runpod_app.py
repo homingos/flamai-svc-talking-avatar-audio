@@ -129,7 +129,7 @@ class TTSServerlessSystem:
         except Exception as e:
             logger.error(f"Session {session_id}: Failed to save local file: {e}")
 
-    def _generate_structured_bucket_path(self, project_id: str, filename: str) -> str:
+    def _generate_structured_bucket_path(self, project_id: str, filename: Optional[str] = None, filename_prefix: str = "audio") -> str:
         """
         Generate a structured bucket path using the new format.
         
@@ -138,7 +138,8 @@ class TTSServerlessSystem:
         
         Args:
             project_id: Project ID for organization
-            filename: Name of the file to upload
+            filename: Custom filename for the file. If None, generates timestamp-based filename.
+            filename_prefix: Prefix for auto-generated filename (default: "audio")
             
         Returns:
             str: Complete structured path for the file
@@ -150,21 +151,32 @@ class TTSServerlessSystem:
             
             # Use the GCP manager's method if available
             if self.gcp_manager:
-                return self.gcp_manager.generate_structured_path(base_path, project_id, filename)
+                return self.gcp_manager.generate_structured_path(base_path, project_id, filename, filename_prefix)
             else:
                 # Fallback implementation if GCP manager is not available
                 from datetime import datetime
                 date_str = datetime.now().strftime("%Y-%m-%d")
+                
+                # Generate filename if not provided
+                if filename is None:
+                    timestamp = int(datetime.now().timestamp())
+                    filename = f"{filename_prefix}_{timestamp}.mp3"
+                
                 structured_path = f"{base_path.strip('/')}/{project_id}/{date_str}/audio/{filename}"
                 return structured_path.replace('\\', '/')
                 
         except Exception as e:
             logger.error(f"Failed to generate structured path: {e}")
-            # Fallback to simple filename
+            # Fallback to simple filename or generate one
+            if filename is None:
+                from datetime import datetime
+                timestamp = int(datetime.now().timestamp())
+                filename = f"{filename_prefix}_{timestamp}.mp3"
             return filename
 
     async def _save_to_temp_and_upload(self, audio_bytes: bytes, project_id: str, 
-                                     filename_prefix: str = "audio", session_id: str = None) -> Optional[str]:
+                                     filename_prefix: str = "audio", session_id: str = None, 
+                                     custom_filename: Optional[str] = None) -> Optional[str]:
         """Save audio to temp directory and upload to GCP if configured - uses only GCSBucketManager methods."""
         if not session_id:
             session_id = self._generate_session_id()
@@ -175,9 +187,14 @@ class TTSServerlessSystem:
         temp_dir = self.settings.get("server_manager.directories.temp", "runtime/temp")
         os.makedirs(temp_dir, exist_ok=True)
         
-        timestamp = int(time.time())
-        filename = f"{filename_prefix}_{timestamp}.mp3"
-        local_temp_path = os.path.join(temp_dir, filename)
+        # Use custom filename or generate one for local temp file
+        if custom_filename:
+            local_filename = custom_filename
+        else:
+            timestamp = int(time.time())
+            local_filename = f"{filename_prefix}_{timestamp}.mp3"
+        
+        local_temp_path = os.path.join(temp_dir, local_filename)
         
         # Save locally
         with open(local_temp_path, 'wb') as f:
@@ -188,7 +205,7 @@ class TTSServerlessSystem:
         if self.gcp_manager:
             try:
                 # Generate structured bucket path
-                full_bucket_path = self._generate_structured_bucket_path(project_id, filename)
+                full_bucket_path = self._generate_structured_bucket_path(project_id, custom_filename, filename_prefix)
 
                 logger.info(f"Session {session_id}: Attempting to upload to GCP bucket path: {full_bucket_path}")
                 logger.info(f"Session {session_id}: Upload path generated for project_id='{project_id}'")
@@ -213,7 +230,7 @@ class TTSServerlessSystem:
         return gcp_path
 
     async def _upload_audio_to_gcp(self, audio_bytes: bytes, project_id: str, filename_prefix: str = "audio", 
-                                 session_id: str = None) -> Optional[str]:
+                                 session_id: str = None, custom_filename: Optional[str] = None) -> Optional[str]:
         """Upload audio bytes to GCP bucket and return the bucket path - uses only GCSBucketManager methods."""
         if not session_id:
             session_id = self._generate_session_id()
@@ -223,12 +240,8 @@ class TTSServerlessSystem:
             return None
 
         try:
-            # Generate filename with timestamp
-            timestamp = int(time.time())
-            filename = f"{filename_prefix}_{timestamp}.mp3"
-            
             # Generate structured bucket path
-            full_bucket_path = self._generate_structured_bucket_path(project_id, filename)
+            full_bucket_path = self._generate_structured_bucket_path(project_id, custom_filename, filename_prefix)
 
             logger.info(f"Session {session_id}: Upload path generated for project_id='{project_id}'")
 
@@ -250,7 +263,8 @@ class TTSServerlessSystem:
         text: str, 
         voice_id: str,
         project_id: str,
-        upload_to_gcp: bool = True
+        upload_to_gcp: bool = True,
+        custom_filename: Optional[str] = None
     ) -> Dict[str, Any]:
         """Generate speech from text using existing voice ID"""
         start_time = time.time()
@@ -322,7 +336,8 @@ class TTSServerlessSystem:
                     audio_bytes, 
                     project_id,
                     "generate_speech",
-                    session_id
+                    session_id,
+                    custom_filename
                 )
                 if gcp_bucket_path and self.gcp_manager:
                     gcp_url = self.gcp_manager.get_public_url(gcp_bucket_path)
@@ -477,7 +492,8 @@ class TTSServerlessSystem:
         new_voice_id: str, 
         audio_base64: str,
         project_id: str,
-        upload_to_gcp: bool = True
+        upload_to_gcp: bool = True,
+        custom_filename: Optional[str] = None
     ) -> Dict[str, Any]:
         """Clone voice and generate speech in one operation"""
         start_time = time.time()
@@ -571,7 +587,8 @@ class TTSServerlessSystem:
                     output_audio_bytes, 
                     project_id,
                     "clone_and_generate",
-                    session_id
+                    session_id,
+                    custom_filename
                 )
                 if gcp_bucket_path and self.gcp_manager:
                     gcp_url = self.gcp_manager.get_public_url(gcp_bucket_path)
@@ -1048,6 +1065,7 @@ async def handler(job):
             voice_id = data.get("voice_id")
             project_id = data.get("project_id")
             upload_to_gcp = data.get("upload_to_gcp", True)  # Default to True
+            custom_filename = data.get("filename")
             
             if not text or not voice_id or not project_id:
                 return {
@@ -1062,7 +1080,8 @@ async def handler(job):
                 text=text,
                 voice_id=voice_id,
                 project_id=project_id,
-                upload_to_gcp=upload_to_gcp
+                upload_to_gcp=upload_to_gcp,
+                custom_filename=custom_filename
             )
             
             # Update metrics
@@ -1138,6 +1157,7 @@ async def handler(job):
             audio_base64 = data.get("audio_base64")
             project_id = data.get("project_id")
             upload_to_gcp = data.get("upload_to_gcp", True)  # Default to True
+            custom_filename = data.get("filename")
             
             if not all([text, new_voice_id, audio_base64, project_id]):
                 return {
@@ -1153,7 +1173,8 @@ async def handler(job):
                 new_voice_id=new_voice_id,
                 audio_base64=audio_base64,
                 project_id=project_id,
-                upload_to_gcp=upload_to_gcp
+                upload_to_gcp=upload_to_gcp,
+                custom_filename=custom_filename
             )
             
             # Update metrics
