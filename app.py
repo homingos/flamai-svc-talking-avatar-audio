@@ -13,7 +13,7 @@ from fastapi.responses import RedirectResponse
 # Load environment variables from .env file at the earliest moment.
 load_dotenv()
 
-from src.api.routes import router as api_router
+from src.api.routes import router as api_router, get_dynamic_endpoints
 from src.core.process_manager import ProcessManager, create_process_manager
 from src.core.server_manager import AIService, ServerManager, ServiceConfig, create_server_manager
 from src.services.tts_service import MinimaxTtsService
@@ -27,58 +27,6 @@ from src.utils.resources.gcp_bucket_manager import GCSBucketManager
 SERVICE_CLASSES: dict[str, type[AIService]] = {
     "minimax_tts": MinimaxTtsService,
 }
-
-def _get_gcp_credentials() -> tuple[Optional[str], Optional[str]]:
-    """
-    Get GCP credentials from environment variables or file path.
-    Supports both file-based credentials and JSON string in environment variables.
-    
-    Returns:
-        tuple: (credentials_path, project_id) where credentials_path can be None if using env JSON
-    """
-    # First, check for traditional file-based credentials
-    credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-    if credentials_path and os.path.exists(credentials_path):
-        logger.info(f"Using GCP credentials from file: {credentials_path}")
-        return credentials_path, os.getenv('GCP_PROJECT_ID')
-    
-    # Check for RunPod secrets pattern
-    runpod_secret_path = os.getenv('GKE_SA_DEV')
-    if runpod_secret_path and os.path.exists(runpod_secret_path):
-        logger.info(f"Using GCP credentials from RunPod secret file: {runpod_secret_path}")
-        return runpod_secret_path, os.getenv('GCP_PROJECT_ID')
-    
-    # Check for JSON credentials in environment variables
-    # Multiple possible environment variable names for flexibility
-    env_var_names = [
-        'GKE_SA_DEV',
-        'GOOGLE_APPLICATION_CREDENTIALS_JSON',
-        'GCP_SERVICE_ACCOUNT_KEY'
-    ]
-    
-    for env_var in env_var_names:
-        service_account_json = os.environ.get(env_var)
-        if service_account_json:
-            try:
-                # Validate JSON
-                service_account_info = json.loads(service_account_json)
-                
-                # Validate that it looks like a service account JSON
-                required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
-                if all(field in service_account_info for field in required_fields):
-                    logger.info(f"Found valid service account JSON in environment variable: {env_var}")
-                    project_id = service_account_info.get('project_id') or os.getenv('GCP_PROJECT_ID')
-                    return None, project_id  # Return None for credentials_path to indicate env JSON should be used
-                else:
-                    logger.warning(f"Service account JSON in {env_var} is missing required fields")
-                    
-            except json.JSONDecodeError as e:
-                logger.warning(f"Invalid JSON in environment variable {env_var}: {e}")
-            except Exception as e:
-                logger.warning(f"Error processing service account JSON from {env_var}: {e}")
-    
-    logger.info("No GCP credentials found in environment variables or files")
-    return None, os.getenv('GCP_PROJECT_ID')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -97,8 +45,8 @@ async def lifespan(app: FastAPI):
         bucket_name = os.getenv('GCP_BUCKET_NAME')
         if bucket_name:
             try:
-                # Get credentials using the enhanced method
-                credentials_path, project_id = _get_gcp_credentials()
+                # Get credentials using the GCSBucketManager static method
+                credentials_path, project_id = GCSBucketManager.get_gcp_credentials()
                 
                 logger.info("Initializing GCP Bucket Manager...")
                 logger.info(f"  - Bucket: {bucket_name}")
@@ -203,18 +151,39 @@ app.include_router(api_router)
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return RedirectResponse(url="/docs")
+    api_prefix = settings.get_api_prefix()
+    return {
+        "service": settings.get("app.name", "TTS API Service"),
+        "version": settings.get("app.version", "1.0.0"),
+        "description": settings.get("app.description", "FastAPI service for TTS and Voice Cloning"),
+        "docs": "/docs",
+        "health": f"{api_prefix}/health",
+        "status": "/status",
+        "endpoints": get_dynamic_endpoints()
+    }
 
 @app.get("/status", tags=["Health"])
 async def get_status():
     return {"status": "ok", "service": settings.get("app.name")}
 
-if __name__ == "__main__":
+def main():
+    """
+    Creates and configures a uvicorn server instance.
+    Returns the configured server instance.
+    """
     server_config = settings.get_server_config()
-    uvicorn.run(
+    
+    config = uvicorn.Config(
         "app:app",
         host=server_config.get("host", "0.0.0.0"),
         port=server_config.get("port", 8000),
         reload=server_config.get("reload", False),
         workers=server_config.get("workers", 1),
+        log_level=server_config.get("log_level", "info"),
     )
+
+    server = uvicorn.Server(config)
+    server.run()
+
+if __name__ == "__main__":
+    main()

@@ -743,3 +743,56 @@ class GCSBucketManager:
                 timestamp = int(datetime.now().timestamp())
                 filename = f"{filename_prefix}_{timestamp}.mp3"
             return filename
+
+    @staticmethod
+    def get_gcp_credentials() -> tuple[Optional[str], Optional[str]]:
+        """
+        Get GCP credentials from environment variables or file path.
+        Supports both file-based credentials and JSON string in environment variables.
+        
+        Returns:
+            tuple: (credentials_path, project_id) where credentials_path can be None if using env JSON
+        """
+        # First, check for traditional file-based credentials
+        credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        if credentials_path and os.path.exists(credentials_path):
+            logger.info(f"Using GCP credentials from file: {credentials_path}")
+            return credentials_path, os.getenv('GCP_PROJECT_ID')
+        
+        # Check for RunPod secrets pattern
+        runpod_secret_path = os.getenv('GKE_SA_DEV')
+        if runpod_secret_path and os.path.exists(runpod_secret_path):
+            logger.info(f"Using GCP credentials from RunPod secret file: {runpod_secret_path}")
+            return runpod_secret_path, os.getenv('GCP_PROJECT_ID')
+        
+        # Check for JSON credentials in environment variables
+        # Multiple possible environment variable names for flexibility
+        env_var_names = [
+            'GKE_SA_DEV',
+            'GOOGLE_APPLICATION_CREDENTIALS_JSON',
+            'GCP_SERVICE_ACCOUNT_KEY'
+        ]
+        
+        for env_var in env_var_names:
+            service_account_json = os.environ.get(env_var)
+            if service_account_json:
+                try:
+                    # Validate JSON
+                    service_account_info = json.loads(service_account_json)
+                    
+                    # Validate that it looks like a service account JSON
+                    required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
+                    if all(field in service_account_info for field in required_fields):
+                        logger.info(f"Found valid service account JSON in environment variable: {env_var}")
+                        project_id = service_account_info.get('project_id') or os.getenv('GCP_PROJECT_ID')
+                        return None, project_id  # Return None for credentials_path to indicate env JSON should be used
+                    else:
+                        logger.warning(f"Service account JSON in {env_var} is missing required fields")
+                        
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Invalid JSON in environment variable {env_var}: {e}")
+                except Exception as e:
+                    logger.warning(f"Error processing service account JSON from {env_var}: {e}")
+        
+        logger.info("No GCP credentials found in environment variables or files")
+        return None, os.getenv('GCP_PROJECT_ID')

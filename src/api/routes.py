@@ -20,7 +20,62 @@ from src.api.models import (
 from src.utils.config.settings import settings
 from src.utils.resources.logger import logger
 
-router = APIRouter(prefix="/api/v1", tags=["TTS and Voice Cloning"])
+router = APIRouter(prefix=settings.get_api_prefix(), tags=settings.get_api_tags())
+
+
+def get_dynamic_endpoints():
+    """
+    Dynamically extracts endpoint information from the FastAPI router.
+    Returns a structured dictionary of all available endpoints.
+    """
+    endpoints = {}
+    api_prefix = settings.get_api_prefix()
+    
+    # Get all routes from the API router
+    for route in router.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            # Extract route information
+            path = route.path
+            methods = list(route.methods - {'HEAD', 'OPTIONS'})  # Exclude HEAD and OPTIONS
+            
+            # Get route metadata
+            summary = getattr(route, 'summary', None)
+            description = getattr(route, 'description', None)
+            
+            # Extract endpoint name from path (remove prefix and convert to readable format)
+            endpoint_name = path.replace(f'{api_prefix}/', '').replace('/', '_').replace('-', '_')
+            
+            # Categorize endpoints based on path
+            if path.startswith(f'{api_prefix}/tts/'):
+                category = 'tts'
+                endpoint_key = endpoint_name.replace('tts_', '')
+            elif path.startswith(f'{api_prefix}/voice/'):
+                category = 'voice'
+                endpoint_key = endpoint_name.replace('voice_', '')
+            elif path.startswith(f'{api_prefix}/health'):
+                category = 'health'
+                endpoint_key = 'health_check'
+            elif path.startswith(f'{api_prefix}/debug/'):
+                category = 'debug'
+                endpoint_key = endpoint_name.replace('debug_', '')
+            else:
+                category = 'other'
+                endpoint_key = endpoint_name
+            
+            # Initialize category if it doesn't exist
+            if category not in endpoints:
+                endpoints[category] = {}
+            
+            # Add endpoint information
+            endpoints[category][endpoint_key] = {
+                "method": methods[0] if methods else "GET",  # Use first method if multiple
+                "path": path,
+                "description": description or f"{methods[0] if methods else 'GET'} {path}",
+                "summary": summary or f"Endpoint for {path}"
+            }
+    
+    return endpoints
+
 
 # Create a directory to save test outputs if configured
 if settings.get("app.save_local_tests", False):

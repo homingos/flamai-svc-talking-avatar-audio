@@ -74,6 +74,14 @@ class SettingsManager:
     
     def get_gcp_config(self) -> Dict[str, Any]:
         return self.get("gcp", {})
+    
+    def get_api_prefix(self) -> str:
+        """Get the API prefix from app configuration."""
+        return self.get("app.api_prefix", "/api/v1")
+    
+    def get_api_tags(self) -> list[str]:
+        """Get the API tags from app configuration."""
+        return self.get("app.api_tags", ["TTS and Voice Cloning"])
 
 # Global instance
 settings = SettingsManager()
