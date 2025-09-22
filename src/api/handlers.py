@@ -15,6 +15,7 @@ from src.api.models import GenerateSpeechRequest, HealthStatus, GenerateSpeechRe
 from src.utils.resources.logger import logger
 from src.utils.config.settings import settings
 from src.utils.resources.gcp_bucket_manager import GCSBucketManager
+from src.utils.resources.file_cleanup import cleanup_after_gcp_upload
 
 class TtsHandler:
     def _generate_session_id(self) -> str:
@@ -80,13 +81,22 @@ class TtsHandler:
                 success = gcp_manager.upload_file(tmp_file_path, full_bucket_path)
                 if success:
                     logger.info(f"Successfully uploaded audio to GCP: {full_bucket_path}")
+                    # Schedule cleanup of temporary file after successful upload
+                    cleanup_after_gcp_upload(tmp_file_path, delay_seconds=1.0)
                     return full_bucket_path
                 else:
                     logger.error(f"Failed to upload audio to GCP: {full_bucket_path}")
+                    # Clean up temp file immediately on failure
+                    os.unlink(tmp_file_path)
                     return None
-            finally:
-                # Clean up temporary file
-                os.unlink(tmp_file_path)
+            except Exception as e:
+                logger.error(f"Error during GCP upload: {e}")
+                # Clean up temp file on exception
+                try:
+                    os.unlink(tmp_file_path)
+                except:
+                    pass
+                return None
 
         except Exception as e:
             logger.error(f"Error uploading audio to GCP: {e}")
@@ -128,6 +138,8 @@ class TtsHandler:
                 if success:
                     logger.info(f"Successfully uploaded audio to GCP: {full_bucket_path}")
                     gcp_path = full_bucket_path
+                    # Schedule cleanup of local temp file after successful GCP upload
+                    cleanup_after_gcp_upload(local_temp_path, delay_seconds=2.0)
                 else:
                     logger.error(f"Failed to upload audio to GCP: {full_bucket_path}")
             except Exception as e:

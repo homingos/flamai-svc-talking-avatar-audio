@@ -22,6 +22,7 @@ from src.core.server_manager import ServiceConfig
 from src.utils.config.settings import settings
 from src.utils.resources.logger import logger
 from src.utils.resources.gcp_bucket_manager import GCSBucketManager
+from src.utils.resources.file_cleanup import cleanup_after_gcp_upload
 
 
 class TTSServerlessSystem:
@@ -197,6 +198,11 @@ class TTSServerlessSystem:
                 if success:
                     logger.info(f"Session {session_id}: Successfully uploaded audio to GCP: {full_bucket_path}")
                     gcp_path = full_bucket_path
+                    # Schedule cleanup of local temp file after successful GCP upload
+                    logger.info(f"Session {session_id}: Scheduling cleanup for file: {local_temp_path}")
+                    logger.info(f"Session {session_id}: File exists before cleanup: {os.path.exists(local_temp_path)}")
+                    cleanup_scheduled = cleanup_after_gcp_upload(local_temp_path, delay_seconds=2.0)
+                    logger.info(f"Session {session_id}: Cleanup scheduled successfully: {cleanup_scheduled}")
                 else:
                     logger.error(f"Session {session_id}: Failed to upload audio to GCP: {full_bucket_path}")
             except Exception as e:
