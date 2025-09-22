@@ -733,7 +733,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - Built with [FastAPI](https://fastapi.tiangolo.com/) for high-performance async web APIs
-- Powered by [MiniMax AI](https://api.minimax.io/) for advanced TTS and voice cloning
+- Powered by [MiniMax AI](https://www.minimax.io/platform_overview) for advanced TTS and voice cloning
 - Google Cloud Storage integration for reliable file storage and delivery
 - [RunPod](https://runpod.io/) serverless platform for scalable deployment
 - [Pydantic](https://pydantic.dev/) for robust data validation and settings management
