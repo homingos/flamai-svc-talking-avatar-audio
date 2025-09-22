@@ -83,40 +83,33 @@ class TTSServerlessSystem:
         return str(uuid.uuid4())
     
     def _initialize_gcp_manager(self):
-        """Initialize GCP bucket manager if enabled"""
+        """Initialize GCP bucket manager if enabled - delegates all credential handling to GCSBucketManager"""
         try:
-            gcp_config = self.settings.get("gcp", {})
-            if not gcp_config.get("enabled", False):
-                logger.info("📦 GCP bucket manager is disabled in configuration")
-                return
-            
-            bucket_name = gcp_config.get("bucket_name")
-            if not bucket_name:
-                logger.warning("📦 GCP bucket name not configured, skipping GCP initialization")
-                return
-            
-            credentials_path = gcp_config.get("credentials_path")
-            create_bucket = gcp_config.get("create_bucket", False)
-            location = gcp_config.get("location", "US")
-            project_id = gcp_config.get("project_id")
-            
-            logger.info("📦 Initializing GCP Bucket Manager...")
-            logger.info(f"  - Bucket: {bucket_name}")
-            logger.info(f"  - Credentials: {credentials_path or 'Default/Environment'}")
-            logger.info(f"  - Create bucket: {create_bucket}")
-            logger.info(f"  - Location: {location}")
-            logger.info(f"  - Project ID: {project_id or 'From credentials'}")
-            
-            self.gcp_manager = GCSBucketManager(
-                bucket_name=bucket_name,
-                credentials_path=credentials_path,
-                create_bucket=create_bucket,
-                location=location,
-                project_id=project_id
-            )
-            
-            logger.info("✅ GCP Bucket Manager initialized successfully!")
-            
+            bucket_name = os.getenv('GCP_BUCKET_NAME')
+            if bucket_name:
+                try:
+                    logger.info("Initializing GCP Bucket Manager...")
+                    logger.info(f"  - Bucket: {bucket_name}")
+                    
+                    # Let GCSBucketManager handle all credential detection and authentication
+                    self.gcp_manager = GCSBucketManager(
+                        bucket_name=bucket_name,
+                        credentials_path=os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),  # Let GCSBucketManager handle env vars if this is None
+                        create_bucket=os.getenv('GCP_CREATE_BUCKET', 'false').lower() == 'true',
+                        location=os.getenv('GCP_BUCKET_LOCATION', 'US'),
+                        project_id=os.getenv('GCP_PROJECT_ID')
+                    )
+                    logger.info(f"✅ GCP Bucket Manager initialized successfully for bucket: {bucket_name}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to initialize GCP Bucket Manager: {e}")
+                    logger.error("This might be due to missing or invalid GCP credentials")
+                    logger.info("GCP upload functionality will be disabled")
+                    self.gcp_manager = None
+            else:
+                logger.warning("📦 GCP_BUCKET_NAME not set. GCP upload functionality will be disabled.")
+                self.gcp_manager = None
+                
         except Exception as e:
             logger.error(f"❌ Failed to initialize GCP Bucket Manager: {e}")
             self.gcp_manager = None
@@ -135,9 +128,29 @@ class TTSServerlessSystem:
         except Exception as e:
             logger.error(f"Session {session_id}: Failed to save local file: {e}")
 
+    def _get_bucket_upload_path(self, custom_path: Optional[str] = None) -> str:
+        """
+        Determine the bucket upload path using priority order:
+        1. custom_path parameter (highest priority - from gcp_path in request)
+        2. gcp.default_upload_path from settings (fallback)
+        
+        Args:
+            custom_path: Custom path specified in the request (gcp_path parameter)
+            
+        Returns:
+            str: The bucket path to use for uploads
+        """
+        # Priority 1: Custom path from request parameter (gcp_path)
+        if custom_path:
+            return custom_path.rstrip('/')
+            
+        # Priority 2: Default from settings
+        default_path = self.settings.get("gcp.default_upload_path", "audio")
+        return default_path.rstrip('/')
+
     async def _save_to_temp_and_upload(self, audio_bytes: bytes, custom_path: Optional[str] = None, 
                                      filename_prefix: str = "audio", session_id: str = None) -> Optional[str]:
-        """Save audio to temp directory and upload to GCP if configured."""
+        """Save audio to temp directory and upload to GCP if configured - uses only GCSBucketManager methods."""
         if not session_id:
             session_id = self._generate_session_id()
             
@@ -159,16 +172,14 @@ class TTSServerlessSystem:
         # Upload to GCP if manager is available
         if self.gcp_manager:
             try:
-                # Determine bucket path
-                bucket_path = custom_path or self.settings.get("gcp.default_upload_path", "audio/")
-                if bucket_path:
-                    full_bucket_path = f"{bucket_path.rstrip('/')}/{filename}"
-                else:
-                    full_bucket_path = filename
+                # Determine bucket path using priority order
+                bucket_path = self._get_bucket_upload_path(custom_path)
+                full_bucket_path = f"{bucket_path}/{filename}" if bucket_path else filename
 
                 logger.info(f"Session {session_id}: Attempting to upload to GCP bucket path: {full_bucket_path}")
+                logger.info(f"Session {session_id}: Upload path resolved from: gcp_path='{custom_path}', default='{self.settings.get('gcp.default_upload_path', 'audio')}'")
                 
-                # Upload from temp file
+                # Use GCSBucketManager's upload_file method
                 success = self.gcp_manager.upload_file(local_temp_path, full_bucket_path)
                 if success:
                     logger.info(f"Session {session_id}: Successfully uploaded audio to GCP: {full_bucket_path}")
@@ -184,7 +195,7 @@ class TTSServerlessSystem:
 
     async def _upload_audio_to_gcp(self, audio_bytes: bytes, filename_prefix: str = "audio", 
                                  custom_path: Optional[str] = None, session_id: str = None) -> Optional[str]:
-        """Upload audio bytes to GCP bucket and return the bucket path."""
+        """Upload audio bytes to GCP bucket and return the bucket path - uses only GCSBucketManager methods."""
         if not session_id:
             session_id = self._generate_session_id()
             
@@ -197,31 +208,20 @@ class TTSServerlessSystem:
             timestamp = int(time.time())
             filename = f"{filename_prefix}_{timestamp}.mp3"
             
-            # Determine bucket path
-            default_path = self.settings.get("gcp.default_upload_path", "audio/")
-            bucket_path = custom_path or default_path
-            if bucket_path:
-                full_bucket_path = f"{bucket_path.rstrip('/')}/{filename}"
+            # Determine bucket path using priority order
+            bucket_path = self._get_bucket_upload_path(custom_path)
+            full_bucket_path = f"{bucket_path}/{filename}" if bucket_path else filename
+
+            logger.info(f"Session {session_id}: Upload path resolved from: gcp_path='{custom_path}', default='{self.settings.get('gcp.default_upload_path', 'audio')}'")
+
+            # Use GCSBucketManager's upload_data method instead of creating temporary files
+            success = self.gcp_manager.upload_data(audio_bytes, full_bucket_path)
+            if success:
+                logger.info(f"Session {session_id}: Successfully uploaded audio to GCP: {full_bucket_path}")
+                return full_bucket_path
             else:
-                full_bucket_path = filename
-
-            # Create temporary file to upload
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
-                tmp_file.write(audio_bytes)
-                tmp_file_path = tmp_file.name
-
-            try:
-                # Upload to GCP
-                success = self.gcp_manager.upload_file(tmp_file_path, full_bucket_path)
-                if success:
-                    logger.info(f"Session {session_id}: Successfully uploaded audio to GCP: {full_bucket_path}")
-                    return full_bucket_path
-                else:
-                    logger.error(f"Session {session_id}: Failed to upload audio to GCP: {full_bucket_path}")
-                    return None
-            finally:
-                # Clean up temporary file
-                os.unlink(tmp_file_path)
+                logger.error(f"Session {session_id}: Failed to upload audio to GCP: {full_bucket_path}")
+                return None
 
         except Exception as e:
             logger.error(f"Session {session_id}: Error uploading audio to GCP: {e}")
@@ -245,6 +245,7 @@ class TTSServerlessSystem:
             logger.info(f"Session {session_id}: Voice ID: {voice_id}")
             logger.info(f"Session {session_id}: Project ID: {project_id}")
             logger.info(f"Session {session_id}: Upload to GCP: {upload_to_gcp}")
+            logger.info(f"Session {session_id}: GCP Path: {gcp_path}")
             
             # Validate input parameters
             if not text or not text.strip():
@@ -457,6 +458,7 @@ class TTSServerlessSystem:
             logger.info(f"Session {session_id}: New Voice ID: {new_voice_id}")
             logger.info(f"Session {session_id}: Project ID: {project_id}")
             logger.info(f"Session {session_id}: Upload to GCP: {upload_to_gcp}")
+            logger.info(f"Session {session_id}: GCP Path: {gcp_path}")
             
             # Validate input parameters
             if not all([text, new_voice_id, audio_base64]):
@@ -702,7 +704,6 @@ class TTSServerlessSystem:
                     "GCP_PROJECT_ID": os.getenv('GCP_PROJECT_ID'),
                     "GCP_CREATE_BUCKET": os.getenv('GCP_CREATE_BUCKET'),
                     "GCP_BUCKET_LOCATION": os.getenv('GCP_BUCKET_LOCATION'),
-                    "BUCKET_PATH": os.getenv('BUCKET_PATH'),
                     "GKE_SA_DEV": os.getenv('GKE_SA_DEV')
                 },
                 "gcp_manager_status": {
