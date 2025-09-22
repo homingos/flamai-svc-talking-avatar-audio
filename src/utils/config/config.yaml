@@ -37,6 +37,7 @@ gcp:
   location: "US"  # Bucket location for creation
   project_id: "${GCP_PROJECT_ID}"
   default_upload_path: "audio/"  # Default path in bucket for uploads
+  base_path: "talking-avatar"  # Base path for all uploads: /<bucket>/<base_path>/<project_id>/<timestamp>/<audio>/file.mp3
 
 # Server Manager Configuration
 server_manager:

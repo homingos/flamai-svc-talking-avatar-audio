@@ -71,6 +71,9 @@ class SettingsManager:
     
     def get_logging_config(self) -> Dict[str, Any]:
         return self.get("logging", {})
+    
+    def get_gcp_config(self) -> Dict[str, Any]:
+        return self.get("gcp", {})
 
 # Global instance
 settings = SettingsManager()
