@@ -36,11 +36,6 @@ class GenerateSpeechRequest(BaseModel):
         description="Whether to upload the generated audio to GCP bucket",
         json_schema_extra={'example': False}
     )
-    gcp_path: Optional[str] = Field(
-        default=None,
-        description="Custom path in GCP bucket for the audio file",
-        json_schema_extra={'example': "audio/generated/"}
-    )
 
 # --- Response Schemas ---
 

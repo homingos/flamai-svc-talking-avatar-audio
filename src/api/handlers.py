@@ -51,8 +51,7 @@ class TtsHandler:
             return None
 
     async def _upload_audio_to_gcp(self, audio_bytes: bytes, request: Request, 
-                                 custom_path: Optional[str] = None, 
-                                 filename_prefix: str = "audio") -> Optional[str]:
+                                 project_id: str, filename_prefix: str = "audio") -> Optional[str]:
         """Upload audio bytes to GCP bucket and return the bucket path."""
         gcp_manager = self._get_gcp_manager(request)
         if not gcp_manager:
@@ -64,12 +63,12 @@ class TtsHandler:
             timestamp = int(time.time())
             filename = f"{filename_prefix}_{timestamp}.mp3"
             
-            # Determine bucket path
-            bucket_path = os.getenv('BUCKET_PATH', custom_path or '')
-            if bucket_path:
-                full_bucket_path = f"{bucket_path.rstrip('/')}/{filename}"
-            else:
-                full_bucket_path = filename
+            # Get base path from configuration
+            gcp_config = settings.get_gcp_config()
+            base_path = gcp_config.get('base_path', 'talking-avatar')
+            
+            # Generate structured path using the new method
+            full_bucket_path = gcp_manager.generate_structured_path(base_path, project_id, filename)
 
             # Create temporary file to upload
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
@@ -94,8 +93,7 @@ class TtsHandler:
             return None
 
     async def _save_to_temp_and_upload(self, audio_bytes: bytes, request: Request, 
-                                     custom_path: Optional[str] = None, 
-                                     filename_prefix: str = "audio") -> Optional[str]:
+                                     project_id: str, filename_prefix: str = "audio") -> Optional[str]:
         """Save audio to temp directory and upload to GCP if configured."""
         gcp_path = None
         
@@ -116,12 +114,12 @@ class TtsHandler:
         gcp_manager = self._get_gcp_manager(request)
         if gcp_manager:
             try:
-                # Determine bucket path
-                bucket_path = os.getenv('BUCKET_PATH', custom_path or '')
-                if bucket_path:
-                    full_bucket_path = f"{bucket_path.rstrip('/')}/{filename}"
-                else:
-                    full_bucket_path = filename
+                # Get base path from configuration
+                gcp_config = settings.get_gcp_config()
+                base_path = gcp_config.get('base_path', 'talking-avatar')
+                
+                # Generate structured path using the new method
+                full_bucket_path = gcp_manager.generate_structured_path(base_path, project_id, filename)
 
                 logger.info(f"Attempting to upload to GCP bucket path: {full_bucket_path}")
                 
@@ -159,7 +157,7 @@ class TtsHandler:
             gcp_path = await self._save_to_temp_and_upload(
                 audio_bytes, 
                 request, 
-                request_data.gcp_path, 
+                request_data.project_id, 
                 "generate_speech"
             )
             if gcp_path:
@@ -212,8 +210,7 @@ class TtsHandler:
             raise HTTPException(status_code=500, detail="Failed to clone voice from the backend API.")
 
     async def clone_and_generate_speech(self, text: str, new_voice_id: str, audio_file: UploadFile, 
-                                      request: Request, upload_to_gcp: bool = False, 
-                                      gcp_path: Optional[str] = None) -> tuple[bytes, Optional[str], str]:
+                                      request: Request, project_id: str, upload_to_gcp: bool = False) -> tuple[bytes, Optional[str], str]:
         """Handles the combined clone-and-generate workflow."""
         session_id = self._generate_session_id()
         logger.info(f"Session {session_id}: Starting clone-and-generate workflow")
@@ -248,7 +245,7 @@ class TtsHandler:
             gcp_path_result = await self._save_to_temp_and_upload(
                 audio_bytes, 
                 request, 
-                gcp_path, 
+                project_id, 
                 "clone_and_generate"
             )
             if gcp_path_result:
@@ -339,7 +336,7 @@ class TtsHandler:
             gcp_path = await self._save_to_temp_and_upload(
                 dummy_audio, 
                 request, 
-                "test/", 
+                "test-project-123", 
                 "test_upload"
             )
             
